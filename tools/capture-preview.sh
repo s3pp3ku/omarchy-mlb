@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Capture the popup, one PNG per tab, for the marketplace listing assets.
+# The capture/diff workflow is adapted from com.leafbox.f1 (MIT), by Robert
+# (leafbox): https://github.com/Snackwrap/omarchy-f1
 #
 # Two things make this awkward to do by hand, and this script works around both:
 #

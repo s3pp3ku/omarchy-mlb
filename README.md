@@ -96,5 +96,7 @@ MIT — see [LICENSE](LICENSE).
 
 I'm new to Omarchy plugin development and used AI assistance to help build
 this widget. The idea was inspired by the community's Formula 1 bar plugin.
+The preview capture/build helpers are adapted from Robert (leafbox)'s
+MIT-licensed [Formula 1 plugin](https://github.com/Snackwrap/omarchy-f1).
 If you spot a bug, have a suggestion, or can help improve the QML or stats,
 please open an issue or pull request — all help is welcome.

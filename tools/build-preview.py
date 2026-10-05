@@ -3,6 +3,9 @@
 
 The screenshots are embedded as data URIs so the page renders identically from
 any working directory and needs nothing fetched at build time.
+
+The composition approach is adapted from com.leafbox.f1 (MIT), by Robert
+(leafbox): https://github.com/Snackwrap/omarchy-f1
 """
 import base64
 import pathlib

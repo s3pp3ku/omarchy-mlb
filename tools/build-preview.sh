@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Compose preview.png (the marketplace listing card) from the per-tab captures.
+# Adapted from com.leafbox.f1 (MIT), by Robert (leafbox):
+# https://github.com/Snackwrap/omarchy-f1
 #
 # The marketplace generates both its 720w grid card and its 1600w detail view
 # from this one file, preserving aspect ratio — so it has to be landscape and
