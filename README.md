@@ -43,9 +43,22 @@ countdown. Favorite-team games always route through it first when they exist.
 omarchy plugin add https://github.com/s3pp3ku/omarchy-mlb
 ```
 
+Remove it with:
+
+```bash
+omarchy plugin remove s3pp3ku.mlb
+```
+
 Settings live on the widget in your bar (right-click): favorite team, default
 tab, whether team colors are painted in tables, 12h/24h times, popup
 position, notify-on-start, and the monthly odds budget.
+
+## External dependencies
+
+At runtime the plugin uses Omarchy's Quickshell shell, `curl` for API requests,
+and Python 3 for the rate-limited odds cache helper. Screenshot regeneration
+also uses `grim`, ImageMagick (`magick`), and Chromium; those are only needed
+for development, not for using the widget.
 
 ## Data & network
 
