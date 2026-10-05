@@ -1,0 +1,142 @@
+{
+  "schemaVersion": 1,
+  "id": "s3pp3ku.mlb",
+  "name": "MLB",
+  "version": "0.2.0",
+  "author": "s3pp3ku",
+  "license": "MIT",
+  "homepage": "https://github.com/s3pp3ku/omarchy-mlb",
+  "repository": "https://github.com/s3pp3ku/omarchy-mlb",
+  "description": "MLB bar widget with playoff bracket, live game details, season-long team stats and player leaders, Statcast highlights, daily odds, and a spring-training countdown.",
+  "keywords": [
+    "mlb",
+    "baseball",
+    "playoffs",
+    "bracket",
+    "scores",
+    "statcast",
+    "stats",
+    "odds",
+    "standings",
+    "bar",
+    "quickshell"
+  ],
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "MLB",
+    "description": "Baseball pill with live scores, full-season team/player stats, Statcast, odds, and spring countdown.",
+    "category": "Info",
+    "aliases": [
+      "mlb",
+      "baseball",
+      "bracket",
+      "playoffs",
+      "world series"
+    ],
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "favoriteTeam": "",
+      "defaultTab": "bracket",
+      "timeFormat": "12h",
+      "teamColors": true,
+      "popupPosition": "icon",
+      "notifyFavorite": false,
+      "oddsBudget": 31
+    },
+    "schema": [
+      {
+        "key": "favoriteTeam",
+        "type": "string",
+        "label": "Favorite team (3-letter MLB abbrev, e.g. NYY)",
+        "defaultValue": ""
+      },
+      {
+        "key": "defaultTab",
+        "type": "enum",
+        "label": "Default tab",
+        "options": [
+          {
+            "value": "bracket",
+            "label": "Bracket"
+          },
+          {
+            "value": "games",
+            "label": "Games"
+          },
+          {
+            "value": "statcast",
+            "label": "Statcast"
+          },
+          {
+            "value": "season",
+            "label": "Season"
+          },
+          {
+            "value": "odds",
+            "label": "Odds"
+          }
+        ],
+        "defaultValue": "bracket"
+      },
+      {
+        "key": "timeFormat",
+        "type": "enum",
+        "label": "Time format",
+        "options": [
+          {
+            "value": "12h",
+            "label": "12-hour"
+          },
+          {
+            "value": "24h",
+            "label": "24-hour"
+          }
+        ],
+        "defaultValue": "12h"
+      },
+      {
+        "key": "teamColors",
+        "type": "boolean",
+        "label": "Show team colors",
+        "defaultValue": true
+      },
+      {
+        "key": "popupPosition",
+        "type": "enum",
+        "label": "Popup position",
+        "options": [
+          {
+            "value": "icon",
+            "label": "Under the bar icon"
+          },
+          {
+            "value": "center",
+            "label": "Centered on the bar"
+          }
+        ],
+        "defaultValue": "icon"
+      },
+      {
+        "key": "notifyFavorite",
+        "type": "boolean",
+        "label": "Notify when my team's game starts",
+        "defaultValue": false
+      },
+      {
+        "key": "oddsBudget",
+        "type": "integer",
+        "label": "Odds pulls per source per month (31 = daily, spread evenly)",
+        "defaultValue": 31,
+        "min": 1,
+        "max": 365,
+        "step": 1
+      }
+    ]
+  }
+}
