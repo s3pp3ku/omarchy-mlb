@@ -268,7 +268,15 @@ Panel {
       "&endDate=" + ymd(end) + "&hydrate=linescore,decisions"))
   }
 
+  property real lastBracketFetch: 0
+  // Refetch unless one just landed (opening the panel and switching to the
+  // Bracket tab both ask, usually within the same moment).
+  function refreshBracketIfStale(maxAgeMs) {
+    if (Date.now() - lastBracketFetch >= (maxAgeMs || 30000)) fetchBracket()
+  }
+
   function fetchBracket() {
+    lastBracketFetch = Date.now()
     loadingBracket = true
     launch(1, fetchArgs(12, base + "schedule/postseason?sportId=1&season=" +
       new Date().getFullYear()))
@@ -482,9 +490,17 @@ Panel {
     running: root.schedule.live.length === 0
     onTriggered: root.fetchSchedule()
   }
-  // The bracket moves on a schedule of its own (a series wraps, the next
-  // round gains teams) — 15 minutes is plenty once it has loaded.
-  Timer { interval: 900000; repeat: true; onTriggered: root.fetchBracket() }
+  // The bracket carries series scores, so it follows the games: every minute
+  // while something is live, every five minutes otherwise (a series wraps,
+  // the next round gains teams). Opening the panel, the Bracket tab, and a
+  // game ending also refresh it (see onOpenedChanged / onViewChanged /
+  // schedProc).
+  Timer {
+    interval: root.schedule.live.length > 0 ? 60000 : 300000
+    repeat: true
+    running: true
+    onTriggered: root.fetchBracket()
+  }
   // Network can be down for a beat at shell startup (right after login or a
   // shell restart); a failed first fetch would otherwise leave the bracket
   // empty for 15 minutes. Retry every 30s until both datasets land.
@@ -533,6 +549,7 @@ Panel {
           if (endedPk > 0) {
             root.holdPk = endedPk
             root.holdUntil = Date.now() + root.holdMs
+            root.fetchBracket()   // a game just ended: series score changed
           }
           root.schedule = next
           root.queuePreviewFeeds(next.games)
@@ -1029,6 +1046,7 @@ Panel {
   }
 
   onViewChanged: {
+    if (view === "bracket") refreshBracketIfStale(30000)
     if (view === "season") ensureStandings()
     if (view === "games" || view === "statcast") ensureFeed(false)
   }
@@ -1039,7 +1057,7 @@ Panel {
       fetchOdds()
       // Opening the panel is also a retry opportunity: a fetch that failed at
       // startup would otherwise sit empty until its next interval.
-      if (series.length === 0) fetchBracket()
+      refreshBracketIfStale(30000)
       if (Object.keys(seasons).length === 0) fetchSeasons()
       ensureFeed(true)
       if (view === "season") ensureStandings()
