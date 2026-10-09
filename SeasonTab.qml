@@ -9,6 +9,11 @@ import "mlb.js" as Mlb
 // the bottom sets favoriteTeam live via `omarchy bar set`.
 Column {
   id: tab
+
+  // Plugin color scheme (Panel.qml): highlight + card wash follow the
+  // Omarchy theme, MLB navy/red, or classic, independent of the shell accent.
+  readonly property color hi: tab.panel && tab.panel.hi !== undefined ? tab.panel.hi : Color.accent
+  function wash(a) { return tab.panel && tab.panel.wash ? tab.panel.wash(a) : Util.alpha(Color.popups.text, a) }
   property var panel: null
   spacing: Style.space(8)
 
@@ -68,9 +73,9 @@ Column {
     width: parent.width
     height: focusCol.implicitHeight + Style.space(12)
     radius: Style.space(6)
-    color: Qt.rgba(1, 1, 1, 0.04)
+    color: tab.wash(0.04)
     border.width: 1
-    border.color: Qt.rgba(1, 1, 1, 0.12)
+    border.color: tab.wash(0.12)
 
     Column {
       id: focusCol
@@ -106,7 +111,7 @@ Column {
           id: recordText
           textFormat: Text.PlainText
           text: tab.favRow ? tab.favRow.wins + "-" + tab.favRow.losses : "—-—"
-          color: Color.accent
+          color: tab.hi
           font.family: Style.font.family
           font.pixelSize: Style.space(15)
           font.bold: true
@@ -162,7 +167,7 @@ Column {
                    : Qt.formatDateTime(new Date(g.startMs), "ddd")
             return ""
           }
-          color: modelData.mode === "live" ? Color.accent : Color.muted
+          color: modelData.mode === "live" ? tab.hi : Color.muted
           font.family: Style.font.family
           font.pixelSize: Style.space(12)
           font.bold: modelData.mode === "live"
@@ -240,7 +245,7 @@ Column {
         width: tab.width - Style.space(130 + 110 + 16)
         horizontalAlignment: Text.AlignRight
         text: panel.fmtShort(modelData.ms - panel.nowMs)
-        color: Color.accent
+        color: tab.hi
         font.family: Style.font.family
         font.pixelSize: Style.space(12)
         font.bold: true
@@ -296,7 +301,7 @@ Column {
         textFormat: Text.PlainText
         width: Style.space(52)
         text: modelData.abbr
-        color: parent.isFav ? Color.accent : Color.popups.text
+        color: parent.isFav ? tab.hi : Color.popups.text
         font.family: Style.font.family
         font.pixelSize: Style.space(13)
         font.bold: parent.isFav
@@ -434,7 +439,7 @@ Column {
       focusable: false
       foreground: Color.popups.text
       background: Color.popups.background
-      accent: Color.accent
+      accent: tab.hi
       fontSize: Style.space(11)
       onChanged: function(v) { tab.pickerLeague = v }
     }
@@ -446,9 +451,9 @@ Column {
       height: Style.space(22)
       radius: Style.space(4)
       anchors.verticalCenter: parent.verticalCenter
-      color: clearMouse.containsMouse ? Qt.rgba(1, 1, 1, 0.1) : "transparent"
+      color: clearMouse.containsMouse ? tab.wash(0.1) : "transparent"
       border.width: 1
-      border.color: Qt.rgba(1, 1, 1, 0.2)
+      border.color: tab.wash(0.2)
 
       Text {
         id: clearText
@@ -482,10 +487,10 @@ Column {
         height: Style.space(22)
         radius: Style.space(4)
         readonly property bool selected: panel && panel.favTeam === modelData.abbr
-        color: selected ? Color.accent
-               : chipMouse.containsMouse ? Qt.rgba(1, 1, 1, 0.1) : Qt.rgba(1, 1, 1, 0.05)
+        color: selected ? tab.hi
+               : chipMouse.containsMouse ? tab.wash(0.1) : tab.wash(0.05)
         border.width: 1
-        border.color: selected ? Color.accent : Qt.rgba(1, 1, 1, 0.14)
+        border.color: selected ? tab.hi : tab.wash(0.14)
 
         Rectangle {
           width: Style.space(3)

@@ -11,6 +11,11 @@ import "mlb.js" as Mlb
 // TTL decide when the network is touched.
 Column {
   id: tab
+
+  // Plugin color scheme (Panel.qml): highlight + card wash follow the
+  // Omarchy theme, MLB navy/red, or classic, independent of the shell accent.
+  readonly property color hi: tab.panel && tab.panel.hi !== undefined ? tab.panel.hi : Color.accent
+  function wash(a) { return tab.panel && tab.panel.wash ? tab.panel.wash(a) : Util.alpha(Color.popups.text, a) }
   property var panel: null
   spacing: Style.space(8)
 
@@ -205,7 +210,7 @@ Column {
             if (g.mode === "live") return "LIVE"
             return panel ? panel.fmtTime(g.startMs) : ""
           }
-          color: modelData.mode === "live" ? Color.accent : Color.popups.text
+          color: modelData.mode === "live" ? tab.hi : Color.popups.text
           font.family: Style.font.family
           font.pixelSize: Style.space(12)
           font.bold: modelData.mode === "live"
@@ -329,9 +334,9 @@ Column {
     width: parent.width
     height: wsCol.implicitHeight + Style.space(14)
     radius: Style.space(6)
-    color: Qt.rgba(1, 1, 1, 0.04)
+    color: tab.wash(0.04)
     border.width: 1
-    border.color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.45)
+    border.color: Qt.rgba(tab.hi.r, tab.hi.g, tab.hi.b, 0.45)
 
     Column {
       id: wsCol
@@ -347,7 +352,7 @@ Column {
         Text {
           textFormat: Text.PlainText
           text: panel.trophy
-          color: Color.accent
+          color: tab.hi
           font.family: Style.font.family
           font.pixelSize: Style.space(15)
           anchors.verticalCenter: parent.verticalCenter
@@ -516,7 +521,7 @@ Column {
       width: Style.space(48)
       elide: Text.ElideRight
       text: parent.rowAbbr !== "" ? parent.rowAbbr : parent.rowName
-      color: parent.leader ? Color.accent : Color.popups.text
+      color: parent.leader ? tab.hi : Color.popups.text
       font.family: Style.font.family
       font.pixelSize: parent.leader ? Style.space(15) : Style.space(12)
       font.bold: true
@@ -537,7 +542,7 @@ Column {
       width: Style.space(56)
       horizontalAlignment: Text.AlignRight
       text: (parent.rowProb * 100).toFixed(1) + "%"
-      color: parent.leader ? Color.accent : Color.popups.text
+      color: parent.leader ? tab.hi : Color.popups.text
       font.family: Style.font.family
       font.pixelSize: parent.leader ? Style.space(17) : Style.space(13)
       font.bold: parent.leader
@@ -553,9 +558,9 @@ Column {
     property string sub: ""
     height: tileCol.implicitHeight + Style.space(12)
     radius: Style.space(6)
-    color: Qt.rgba(1, 1, 1, 0.04)
+    color: tab.wash(0.04)
     border.width: 1
-    border.color: Qt.rgba(1, 1, 1, 0.12)
+    border.color: tab.wash(0.12)
 
     Column {
       id: tileCol
@@ -579,7 +584,7 @@ Column {
         Text {
           textFormat: Text.PlainText
           text: value
-          color: Color.accent
+          color: tab.hi
           font.family: Style.font.family
           font.pixelSize: Style.space(22)
           font.bold: true

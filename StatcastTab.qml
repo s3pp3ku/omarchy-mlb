@@ -10,6 +10,11 @@ import "mlb.js" as Mlb
 // the same numbers Baseball Savant charts — plus outbound links.
 Column {
   id: tab
+
+  // Plugin color scheme (Panel.qml): highlight + card wash follow the
+  // Omarchy theme, MLB navy/red, or classic, independent of the shell accent.
+  readonly property color hi: tab.panel && tab.panel.hi !== undefined ? tab.panel.hi : Color.accent
+  function wash(a) { return tab.panel && tab.panel.wash ? tab.panel.wash(a) : Util.alpha(Color.popups.text, a) }
   property var panel: null
   spacing: Style.space(8)
 
@@ -145,14 +150,14 @@ Column {
         readonly property bool isFocus: panel.focusGame &&
                                         panel.focusGame.gamePk === modelData.gamePk
         readonly property bool pinned: panel.focusOverride === modelData.gamePk
-        color: pinned ? Color.accent
-             : isFocus ? Qt.rgba(1, 1, 1, 0.14)
-             : chipMouse.containsMouse ? Qt.rgba(1, 1, 1, 0.1)
-             : Qt.rgba(1, 1, 1, 0.05)
+        color: pinned ? tab.hi
+             : isFocus ? tab.wash(0.14)
+             : chipMouse.containsMouse ? tab.wash(0.1)
+             : tab.wash(0.05)
         border.width: 1
-        border.color: modelData.mode === "live" && !pinned ? Color.accent
-                    : pinned ? Color.accent
-                    : Qt.rgba(1, 1, 1, 0.14)
+        border.color: modelData.mode === "live" && !pinned ? tab.hi
+                    : pinned ? tab.hi
+                    : tab.wash(0.14)
 
         Text {
           id: chipText
@@ -167,7 +172,7 @@ Column {
                    "-" + (g.home.score !== null ? g.home.score : "?")
           }
           color: pinned ? Color.popups.background
-               : modelData.mode === "live" ? Color.accent
+               : modelData.mode === "live" ? tab.hi
                : Color.popups.text
           font.family: Style.font.family
           font.pixelSize: Style.space(11)
@@ -304,7 +309,7 @@ Column {
           width: Style.space(58)
           horizontalAlignment: Text.AlignRight
           text: modelData.ev.toFixed(1)
-          color: Color.accent
+          color: tab.hi
           font.family: Style.font.family
           font.pixelSize: Style.space(14)
           font.bold: true
@@ -367,7 +372,7 @@ Column {
           width: Style.space(58)
           horizontalAlignment: Text.AlignRight
           text: modelData.speed.toFixed(1)
-          color: Color.accent
+          color: tab.hi
           font.family: Style.font.family
           font.pixelSize: Style.space(14)
           font.bold: true
@@ -402,9 +407,264 @@ Column {
   }
 
   // ---- Season sections ------------------------------------------------------
+  // ---- Baseball Savant: this game -----------------------------------------
+  // From Savant's Gamefeed (panel.savantGame): what the MLB feed can't say —
+  // expected batting average per ball, barrels, bat speed, park-adjusted
+  // homers, and each starter's arsenal with spin.
+  readonly property var sv: (panel !== null && panel.savantGame !== null && panel.focusGame !== null &&
+                             panel.savantGamePk === panel.focusGame.gamePk) ? panel.savantGame : null
+
+  function xba(v) { return v === null || v === undefined ? "" : "xBA " + v.toFixed(3).replace(/^0/, "") }
+
+  Column {
+    visible: tab.sv !== null && tab.sv.batted > 0
+    width: parent.width
+    spacing: Style.space(6)
+
+    PanelSectionHeader {
+      text: "BASEBALL SAVANT — THIS GAME"
+      foreground: Color.popups.text
+      font.letterSpacing: Style.space(2)
+    }
+
+    Row {
+      width: parent.width
+      spacing: Style.space(8)
+      StatChip { width: (parent.width - Style.space(16)) / 3
+        label: "BARRELS " + (panel && panel.focusGame ? panel.focusGame.away.abbr : "")
+        value: tab.sv ? String(tab.sv.barrels.away) : "—" }
+      StatChip { width: (parent.width - Style.space(16)) / 3
+        label: "BARRELS " + (panel && panel.focusGame ? panel.focusGame.home.abbr : "")
+        value: tab.sv ? String(tab.sv.barrels.home) : "—" }
+      StatChip { width: (parent.width - Style.space(16)) / 3
+        label: "FASTEST SWING"
+        value: tab.sv && tab.sv.swings.length ? tab.sv.swings[0].batSpeed.toFixed(1) + " mph" : "—" }
+    }
+
+    Repeater {
+      model: tab.sv ? [
+        { title: "TOUGHEST OUTS", hint: "best contact that still got caught", rows: tab.sv.hardOuts, kind: "xba" },
+        { title: "CHEAPEST HITS", hint: "lowest expected average that fell in", rows: tab.sv.cheapHits, kind: "xba" },
+        { title: "ALMOST GONE", hint: "would have been a homer in other parks", rows: tab.sv.nearHrs, kind: "parks" },
+        { title: "FASTEST SWINGS", hint: "bat speed at contact", rows: tab.sv.swings, kind: "bat" }
+      ] : []
+      delegate: Column {
+        id: svGroup
+        required property var modelData
+        visible: modelData.rows.length > 0
+        width: tab.width
+        spacing: Style.space(2)
+        Row {
+          spacing: Style.space(8)
+          Text {
+            textFormat: Text.PlainText
+            text: modelData.title
+            color: Color.muted
+            font.family: Style.font.family
+            font.pixelSize: Style.space(10)
+            font.bold: true
+            font.letterSpacing: Style.space(1)
+          }
+          Text {
+            textFormat: Text.PlainText
+            text: modelData.hint
+            color: Color.muted
+            opacity: 0.7
+            font.family: Style.font.family
+            font.pixelSize: Style.space(10)
+            font.italic: true
+          }
+        }
+        Repeater {
+          model: modelData.rows
+          delegate: Row {
+            id: svRow
+            required property var modelData
+            readonly property string kind: svGroup.modelData.kind
+            width: tab.width
+            spacing: Style.space(6)
+            Rectangle {
+              width: Style.space(3)
+              height: Style.space(14)
+              radius: 1
+              anchors.verticalCenter: parent.verticalCenter
+              color: tab.sideColor(svRow.modelData.side)
+            }
+            Text {
+              width: Style.space(170)
+              elide: Text.ElideRight
+              textFormat: Text.PlainText
+              text: panel ? panel.safe(svRow.modelData.player, 28) : ""
+              color: Color.popups.text
+              font.family: Style.font.family
+              font.pixelSize: Style.space(12)
+            }
+            Text {
+              width: tab.width - Style.space(170) - Style.space(110) - Style.space(24)
+              elide: Text.ElideRight
+              textFormat: Text.PlainText
+              text: panel ? panel.safe(svRow.modelData.event, 16) +
+                    (svRow.modelData.ev !== null ? " · " + svRow.modelData.ev.toFixed(1) + " mph" : "") +
+                    (svRow.modelData.dist ? " · " + Math.round(svRow.modelData.dist) + " ft" : "") : ""
+              color: Color.muted
+              font.family: Style.font.family
+              font.pixelSize: Style.space(11)
+            }
+            Text {
+              width: Style.space(110)
+              horizontalAlignment: Text.AlignRight
+              textFormat: Text.PlainText
+              text: svRow.kind === "parks" ? svRow.modelData.parks + "/30 parks"
+                  : svRow.kind === "bat" ? (svRow.modelData.batSpeed !== null ? svRow.modelData.batSpeed.toFixed(1) + " mph" : "")
+                  : tab.xba(svRow.modelData.xba)
+              color: tab.hi
+              font.family: Style.font.family
+              font.pixelSize: Style.space(12)
+              font.bold: true
+            }
+          }
+        }
+      }
+    }
+
+    // Starters' arsenals with spin (Savant tracks spin; MLB's feed rounds it away).
+    Text {
+      visible: tab.sv !== null && tab.sv.arsenals.length > 0
+      textFormat: Text.PlainText
+      text: "STARTERS' ARSENALS"
+      color: Color.muted
+      font.family: Style.font.family
+      font.pixelSize: Style.space(10)
+      font.bold: true
+      font.letterSpacing: Style.space(1)
+    }
+    Row {
+      width: parent.width
+      spacing: Style.space(10)
+      Repeater {
+        model: tab.sv ? tab.sv.arsenals : []
+        delegate: Rectangle {
+          id: arsCard
+          required property var modelData
+          width: (tab.width - Style.space(10)) / 2
+          height: arsCol.implicitHeight + Style.space(14)
+          radius: Style.space(6)
+          color: tab.wash(0.04)
+          border.width: 1
+          border.color: tab.wash(0.12)
+          Column {
+            id: arsCol
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.margins: Style.space(7)
+            spacing: Style.space(2)
+            Text {
+              width: parent.width
+              elide: Text.ElideRight
+              textFormat: Text.PlainText
+              text: panel ? panel.safe(arsCard.modelData.pitcher, 28) + " · " + arsCard.modelData.total + " pitches" : ""
+              color: Color.popups.text
+              font.family: Style.font.family
+              font.pixelSize: Style.space(12)
+              font.bold: true
+            }
+            Repeater {
+              model: arsCard.modelData.mix.length > 6 ? arsCard.modelData.mix.slice(0, 6) : arsCard.modelData.mix
+              delegate: Row {
+                required property var modelData
+                spacing: Style.space(5)
+                Rectangle {
+                  width: Style.space(8); height: width; radius: width / 2
+                  anchors.verticalCenter: parent.verticalCenter
+                  color: tab.panel.pitchColor(Mlb.PITCH_CODE_BY_NAME[modelData.type] || "")
+                }
+                Text {
+                  width: Style.space(96)
+                  elide: Text.ElideRight
+                  textFormat: Text.PlainText
+                  text: panel ? panel.safe(Mlb.shortPitch(modelData.type), 18) : ""
+                  color: Color.popups.text
+                  font.family: Style.font.family
+                  font.pixelSize: Style.space(11)
+                }
+                Text {
+                  width: arsCol.width - Style.space(96) - Style.space(8) - Style.space(10)
+                  horizontalAlignment: Text.AlignRight
+                  textFormat: Text.PlainText
+                  text: modelData.pct + "%" +
+                        (modelData.velo !== null ? " · " + modelData.velo.toFixed(1) + " mph" : "") +
+                        (modelData.spin !== null ? " · " + modelData.spin + " rpm" : "")
+                  color: Color.muted
+                  font.family: Style.font.family
+                  font.pixelSize: Style.space(10)
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // ---- Starters' Savant percentiles ---------------------------------------
+  Column {
+    visible: panel !== null && panel.pctReady && f !== null &&
+             (f.awayProbableId > 0 || f.homeProbableId > 0)
+    width: parent.width
+    spacing: Style.space(6)
+    PanelSectionHeader {
+      text: "STARTERS — SAVANT PERCENTILES " + (panel ? panel.statsYear : "")
+      foreground: Color.popups.text
+      font.letterSpacing: Style.space(2)
+    }
+    Row {
+      width: parent.width
+      spacing: Style.space(14)
+      Repeater {
+        model: f && panel && panel.focusGame ? [
+          { abbr: panel.focusGame.away.abbr, id: f.awayProbableId, name: f.awayProbable },
+          { abbr: panel.focusGame.home.abbr, id: f.homeProbableId, name: f.homeProbable }
+        ] : []
+        delegate: Column {
+          required property var modelData
+          readonly property var bars: modelData.id ? Mlb.percentileBars(panel.pctPitchers[modelData.id], "pitcher") : []
+          width: (tab.width - Style.space(14)) / 2
+          spacing: Style.space(3)
+          Text {
+            width: parent.width
+            elide: Text.ElideRight
+            textFormat: Text.PlainText
+            text: modelData.abbr + " · " + (panel ? panel.safe(modelData.name || "TBD", 28) : "")
+            color: Color.popups.text
+            font.family: Style.font.family
+            font.pixelSize: Style.space(12)
+            font.bold: true
+          }
+          PercentileBars {
+            panel: tab.panel
+            visible: parent.bars.length > 0
+            width: parent.width
+            labelWidth: Style.space(80)
+            model: parent.bars
+          }
+          Text {
+            visible: parent.bars.length === 0
+            textFormat: Text.PlainText
+            text: "Not enough innings to rank"
+            color: Color.muted
+            font.family: Style.font.family
+            font.pixelSize: Style.space(10)
+            font.italic: true
+          }
+        }
+      }
+    }
+  }
+
   // Full-season stats for the teams playing in the focus game and for the
   // whole league — useful when a game is on, but these sections stand alone
-  // between games. Data: MLB stats API (teams/stats + stats/leaders), 2026
+  // between games. Data: MLB stats API (teams/stats + stats/leaders), the
   // regular season.
   readonly property var focusRowAway: panel !== null && panel.focusGame !== null
                      && panel.teamStatsById[panel.focusGame.away.id] !== undefined
@@ -413,7 +673,7 @@ Column {
                      && panel.teamStatsById[panel.focusGame.home.id] !== undefined
                      ? panel.teamStatsById[panel.focusGame.home.id] : null
   readonly property string statsSeasonLabel: panel !== null
-    ? String(panel.thisYear) + " REGULAR SEASON"
+    ? String(panel.statsYear) + " REGULAR SEASON"
     : String(new Date().getFullYear()) + " REGULAR SEASON"
 
   Column {
@@ -431,9 +691,9 @@ Column {
       width: parent.width
       height: mCol.implicitHeight + Style.space(14)
       radius: Style.space(6)
-      color: Qt.rgba(1, 1, 1, 0.04)
+      color: tab.wash(0.04)
       border.width: 1
-      border.color: Qt.rgba(1, 1, 1, 0.12)
+      border.color: tab.wash(0.12)
 
       Column {
         id: mCol
@@ -566,7 +826,7 @@ Column {
             color: {
               var g = panel.focusGame
               return g && (g.away.id === modelData.id || g.home.id === modelData.id)
-                  ? Color.accent : Color.popups.text
+                  ? tab.hi : Color.popups.text
             }
             font.family: Style.font.family
             font.pixelSize: Style.space(12)
@@ -607,9 +867,9 @@ Column {
           width: (parent.width - Style.space(16)) / 3
           height: leadCol.implicitHeight + Style.space(12)
           radius: Style.space(6)
-          color: Qt.rgba(1, 1, 1, 0.04)
+          color: tab.wash(0.04)
           border.width: 1
-          border.color: Qt.rgba(1, 1, 1, 0.12)
+          border.color: tab.wash(0.12)
 
           Column {
             id: leadCol
@@ -645,10 +905,98 @@ Column {
                   horizontalAlignment: Text.AlignRight
                   width: Style.space(56)
                   text: modelData.value
-                  color: Color.accent
+                  color: tab.hi
                   font.bold: true
                   font.family: Style.font.family
                   font.pixelSize: Style.space(12)
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // ---- Baseball Savant season leaderboards --------------------------------
+  Column {
+    visible: panel !== null && panel.savantBoards.length > 0
+    width: parent.width
+    spacing: Style.space(4)
+
+    PanelSectionHeader {
+      text: "SAVANT LEADERBOARDS — " + tab.statsSeasonLabel
+      foreground: Color.popups.text
+      font.letterSpacing: Style.space(2)
+    }
+
+    Flow {
+      width: parent.width
+      spacing: Style.space(8)
+      Repeater {
+        model: panel !== null ? panel.savantBoards : []
+        delegate: Rectangle {
+          id: board
+          required property var modelData
+          width: (parent.width - Style.space(8)) / 2
+          height: boardCol.implicitHeight + Style.space(12)
+          radius: Style.space(6)
+          color: tab.wash(0.04)
+          border.width: 1
+          border.color: tab.wash(0.12)
+          Column {
+            id: boardCol
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            anchors.margins: Style.space(7)
+            spacing: Style.space(2)
+            Row {
+              spacing: Style.space(6)
+              Text {
+                textFormat: Text.PlainText
+                text: board.modelData.label
+                color: Color.muted
+                font.family: Style.font.family
+                font.pixelSize: Style.space(9)
+                font.bold: true
+                font.letterSpacing: Style.space(1)
+              }
+              Text {
+                textFormat: Text.PlainText
+                text: board.modelData.hint
+                color: Color.muted
+                opacity: 0.7
+                font.family: Style.font.family
+                font.pixelSize: Style.space(9)
+                font.italic: true
+              }
+            }
+            Repeater {
+              model: board.modelData.rows
+              delegate: Row {
+                required property var modelData
+                required property int index
+                spacing: Style.space(4)
+                Text {
+                  width: boardCol.width - Style.space(84)
+                  elide: Text.ElideRight
+                  textFormat: Text.PlainText
+                  text: (index + 1) + ". " + panel.safe(modelData.name, 26) +
+                        (modelData.team ? "  " + panel.safe(modelData.team, 12) : "")
+                  color: Color.popups.text
+                  font.family: Style.font.family
+                  font.pixelSize: Style.space(11)
+                }
+                Text {
+                  width: Style.space(80)
+                  horizontalAlignment: Text.AlignRight
+                  textFormat: Text.PlainText
+                  text: modelData.value
+                  color: tab.hi
+                  font.family: Style.font.family
+                  font.pixelSize: Style.space(12)
+                  font.bold: true
                 }
               }
             }
@@ -665,7 +1013,7 @@ Column {
     Text {
       textFormat: Text.PlainText
       text: "MLB Gameday ↗"
-      color: Color.accent
+      color: tab.hi
       font.family: Style.font.family
       font.pixelSize: Style.space(12)
       font.underline: linkMouse1.containsMouse
@@ -680,7 +1028,7 @@ Column {
     Text {
       textFormat: Text.PlainText
       text: "Baseball Savant ↗"
-      color: Color.accent
+      color: tab.hi
       font.family: Style.font.family
       font.pixelSize: Style.space(12)
       font.underline: linkMouse2.containsMouse
@@ -703,9 +1051,9 @@ Column {
     property string sub: ""
     height: tileCol.implicitHeight + Style.space(12)
     radius: Style.space(6)
-    color: Qt.rgba(1, 1, 1, 0.04)
+    color: tab.wash(0.04)
     border.width: 1
-    border.color: Qt.rgba(1, 1, 1, 0.12)
+    border.color: tab.wash(0.12)
 
     Column {
       id: tileCol
@@ -729,7 +1077,7 @@ Column {
         Text {
           textFormat: Text.PlainText
           text: value
-          color: Color.accent
+          color: tab.hi
           font.family: Style.font.family
           font.pixelSize: Style.space(22)
           font.bold: true
@@ -822,9 +1170,9 @@ Column {
     property string value: ""
     height: chipCol.implicitHeight + Style.space(8)
     radius: Style.space(5)
-    color: Qt.rgba(1, 1, 1, 0.03)
+    color: tab.wash(0.03)
     border.width: 1
-    border.color: Qt.rgba(1, 1, 1, 0.1)
+    border.color: tab.wash(0.1)
 
     Column {
       id: chipCol

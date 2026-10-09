@@ -396,6 +396,155 @@ function check(name, cond, extra) {
   check("compactDesc strips slot", mlb.compactDesc("NLDS 'A' Game 2") === "NLDS Game 2", mlb.compactDesc("NLDS 'A' Game 2"));
   check("pillDesc short", mlb.pillDesc("World Series Game 3") === "World Series G3", mlb.pillDesc("World Series Game 3"));
 
+  console.log("champion recap (completed postseasons)");
+  {
+    // 2025: LAD through the Wild Card, 7-game WS over TOR.
+    const s25 = mlb.parsePostseason(await get(`${BASE}/schedule/postseason?sportId=1&season=2025`));
+    const p = mlb.championPath(s25);
+    check("2025 champion found", p && p.team.abbr === "LAD", p && p.team);
+    check("2025 four rounds, no bye", p && p.rounds.length === 4 && p.rounds.every(r => !r.bye),
+          p && p.rounds.map(r => r.round));
+    check("2025 WS 4-3 over TOR", p && p.wsWon === 4 && p.wsLost === 3 && p.opp.abbr === "TOR",
+          p && [p.wsWon, p.wsLost, p.opp.abbr]);
+    check("2025 postseason record 13-4", p && p.wins === 13 && p.losses === 4, p && [p.wins, p.losses]);
+    check("2025 seven WS games, last is clincher",
+          p && p.wsGames.length === 7 && p.wsGames[6].clincher === true &&
+          p.wsGames.filter(g => g.clincher).length === 1);
+    check("clinchMs is the last WS game", p && p.clinchMs === p.wsGames[6].startMs);
+    // 2024: LAD had a bye.
+    const p24 = mlb.championPath(mlb.parsePostseason(await get(`${BASE}/schedule/postseason?sportId=1&season=2024`)));
+    check("2024 bye row", p24 && p24.rounds[0].bye === true && p24.rounds[0].name === "NL Wild Card",
+          p24 && p24.rounds[0]);
+    check("2024 bye not counted", p24 && p24.wins === 11 && p24.losses === 5, p24 && [p24.wins, p24.losses]);
+    check("no champion while undecided", mlb.championPath(series.filter(s => s.round !== "WS")) === null);
+    check("hasRealTeams on real bracket", mlb.hasRealTeams(s25));
+    check("hasRealTeams false on empty", !mlb.hasRealTeams([]));
+    check("hasRealTeams false on placeholders",
+          !mlb.hasRealTeams([{ realTeams: [] }, { realTeams: [] }]));
+    const mvp = mlb.parseAwardWinner(await get(`${BASE}/awards/WSMVP/recipients?season=2025`));
+    check("2025 WS MVP parsed", mvp && mvp.name === "Yoshinobu Yamamoto" && mvp.teamAbbr === "LAD", mvp);
+    check("award winner null before announced", mlb.parseAwardWinner({ awards: [] }) === null);
+  }
+
+  console.log("baseball savant");
+  {
+    const SAV = "https://baseballsavant.mlb.com/leaderboard/";
+    async function text(url) {
+      const res = await fetch(url, { signal: AbortSignal.timeout(30000) });
+      if (!res.ok) throw new Error(`${res.status} ${url}`);
+      return res.text();
+    }
+    check("csv quoted fields", JSON.stringify(mlb.parseCsv('\uFEFF"a","b, c"\n1,"x ""y"""\n')) ===
+          JSON.stringify([{ a: "1", "b, c": 'x "y"' }]), mlb.parseCsv('"a","b, c"\n1,"x ""y"""\n'));
+    check("firstLast", mlb.firstLast("Crow-Armstrong, Pete") === "Pete Crow-Armstrong");
+    const pctB = mlb.parsePercentiles(await text(`${SAV}percentile-rankings?type=batter&year=2025&csv=true`));
+    const ohtani = mlb.percentileBars(pctB[660271], "batter");
+    check("batter percentiles parsed", Object.keys(pctB).length > 300, Object.keys(pctB).length);
+    check("Ohtani xwOBA elite", ohtani.length > 5 && ohtani[0].key === "xwoba" && ohtani[0].pct >= 90, ohtani[0]);
+    const pctP = mlb.parsePercentiles(await text(`${SAV}percentile-rankings?type=pitcher&year=2025&csv=true`));
+    check("pitcher percentiles have xERA", mlb.percentileBars(pctP[669373], "pitcher").some(b => b.key === "xera"));
+    check("percentile colors", mlb.percentileColor(0) !== mlb.percentileColor(100) &&
+          /^#[0-9a-f]{6}$/.test(mlb.percentileColor(50)));
+    const boards = mlb.savantLeaderboards({
+      xstats: await text(`${SAV}expected_statistics?type=batter&year=2025&position=&team=&min=q&csv=true`),
+      statcast: await text(`${SAV}statcast?type=batter&year=2025&position=&team=&min=q&csv=true`),
+      bat: "", sprint: "", oaa: "" });
+    check("savant boards built", boards.length >= 4 && boards.every(b => b.rows.length === 5),
+          boards.map(b => b.label));
+    check("empty boards tolerated", mlb.savantLeaderboards({}).length === 0);
+    const gf = await get(`https://baseballsavant.mlb.com/gf?game_pk=813024`);
+    const sg = mlb.parseSavantGame(gf);
+    check("savant game barrels", sg.barrels.away + sg.barrels.home === 9, sg.barrels);
+    check("savant game arsenals", sg.arsenals.length === 2 && sg.arsenals[0].mix[0].spin > 1000,
+          sg.arsenals.map(a => a.pitcher));
+    check("cheap hits sorted by xBA", sg.cheapHits.length && sg.cheapHits[0].xba <= sg.cheapHits[sg.cheapHits.length - 1].xba);
+    check("savant game tolerates junk", mlb.parseSavantGame(null).batted === 0);
+  }
+
+  console.log("broadcasts");
+  {
+    const b = mlb.parseBroadcasts([
+      { name: "TBS/HBO MAX", type: "TV", language: "en", isNational: true, homeAway: "away" },
+      { name: "TBS/HBO MAX", type: "TV", language: "en", isNational: true, homeAway: "home" },
+      { name: "WTAM 1100", type: "AM", language: "en", isNational: false, homeAway: "home" },
+      { name: "Rangers Sports Network, presented by Progressive", type: "TV", language: "en", isNational: false, homeAway: "away" },
+      { name: "Univision/ TUDN", type: "TV", language: "es", isNational: true, homeAway: "home" }
+    ], "TEX", "CLE");
+    check("national TV deduped and first", JSON.stringify(b.tv) === JSON.stringify(["TBS/HBO MAX", "TEX Rangers Sports Network"]), b.tv);
+    check("local radio prefixed", b.radio[0] === "CLE WTAM 1100", b.radio);
+    check("spanish split out", b.spanish[0] === "Univision/TUDN", b.spanish);
+    check("radio stations structured", b.stations.length === 1 && b.stations[0].side === "home" &&
+          b.stations[0].abbr === "CLE" && b.stations[0].query === "WTAM", b.stations);
+    check("stationQuery call letters", mlb.stationQuery("KLAC AM570", "Dodgers Radio AM570") === "KLAC");
+    check("stationQuery falls back to name", mlb.stationQuery("", "104.3 The Score") === "104.3 The Score");
+    check("no broadcasts tolerated", mlb.parseBroadcasts(undefined, "A", "B").tv.length === 0);
+    const sb = mlb.parseSchedule(await get(`${BASE}/schedule?sportId=1&startDate=2026-10-10&endDate=2026-10-10&hydrate=broadcasts(all)`));
+    check("schedule games carry media", sb.games.length > 0 && sb.games.every(g => g.media && Array.isArray(g.media.tv)));
+  }
+
+  console.log("radio streams");
+  {
+    const st = (o) => Object.assign({ lastcheckok: 1, countrycode: "US", codec: "AAC", clickcount: 1 }, o);
+    check("whole-word match only", mlb.pickStream([st({ name: "fmrainbowtamil", url_resolved: "https://a/x" })], "WTAM") === null);
+    const p = mlb.pickStream([
+      st({ name: "WTAM 1100 relay", url_resolved: "https://b/x", countrycode: "DE", clickcount: 900 }),
+      st({ name: "WTAM 1100 - Cleveland, Ohio", url_resolved: "https://a/x", stationuuid: "0510988b-b95f-43a5-b9a7-4ab57ebf7e1d" })
+    ], "WTAM");
+    check("US listing preferred", p && p.url === "https://a/x" && p.uuid.length === 36, p);
+    check("broken stations skipped", mlb.pickStream([st({ name: "KLAC", url_resolved: "https://a/x", lastcheckok: 0 })], "KLAC") === null);
+    check("non-http urls rejected", mlb.pickStream([st({ name: "KLAC", url_resolved: "file:///etc/passwd" })], "KLAC") === null &&
+          mlb.pickStream([st({ name: "KLAC", url_resolved: "https://a/x --script=evil" })], "KLAC") === null);
+    check("regex chars in query safe", mlb.pickStream([st({ name: "104.3 The Score", url_resolved: "https://a/x" })], "104.3 The Score") !== null);
+    const live = await (await fetch("https://de1.api.radio-browser.info/json/stations/search?name=KLAC&limit=30&hidebroken=true&order=clickcount&reverse=true",
+                                    { headers: { "User-Agent": "omarchy-mlb/0.1" }, signal: AbortSignal.timeout(20000) })).json();
+    const k = mlb.pickStream(live, "KLAC");
+    check("KLAC resolves live", k && /^https?:\/\//.test(k.url), k);
+  }
+
+  console.log("theme palette");
+  {
+    const pal = mlb.parseThemeColors('mode = "light"\naccent = "#7d82d9"\nred = "#ED5B5A"\ngreen="#92a593"\n# x = "#000000"\n');
+    check("named colors parsed", pal.red === "#ED5B5A" && pal.green === "#92a593" && pal.mode === "light", pal);
+    check("comments ignored", pal.x === undefined);
+    const ansi = mlb.parseThemeColors('color1 = "#aa0000"\ncolor4 = "#0000aa"\n');
+    check("ansi fallback", ansi.red === "#aa0000" && ansi.blue === "#0000aa", ansi);
+    check("theme pitch color", mlb.themePitchColor("FF", pal) === "#ED5B5A" && mlb.themePitchColor("CH", pal) === "#92a593");
+    check("theme pitch falls back", mlb.themePitchColor("FF", {}) === mlb.pitchColor("FF"));
+    check("percentile endpoints", mlb.percentileColor(0, "#000010", "#808080", "#100000") === "#000010" &&
+          mlb.percentileColor(100, "#000010", "#808080", "#100000") === "#100000");
+  }
+
+  console.log("matchup switcher");
+  {
+    const now = Date.now();
+    const mk = (pk, mode, off) => ({ gamePk: pk, mode, startMs: now + off,
+      away: { abbr: "A" }, home: { abbr: "H" } });
+    const list = mlb.switcherGames([
+      mk(1, "final", -3 * 3600e3), mk(2, "live", -3600e3), mk(3, "preview", 2 * 3600e3),
+      mk(4, "live", -2 * 3600e3), mk(5, "final", -1800e3), mk(6, "preview", 3 * 86400e3),
+      mk(7, "final", -2 * 86400e3)]);
+    // Live (earliest first), then later today, then today's finals newest first.
+    // Same-day checks can flip near midnight, so only assert the stable parts.
+    check("live games lead", list[0].gamePk === 4 && list[1].gamePk === 2, list.map(g => g.gamePk));
+    check("other days excluded", !list.some(g => g.gamePk === 6 || g.gamePk === 7), list.map(g => g.gamePk));
+    check("cap respected", mlb.switcherGames(Array.from({ length: 30 }, (_, i) => mk(i, "live", -i)), 15).length === 15);
+  }
+
+  console.log("live at-bat");
+  {
+    const lf = mlb.parseLive(await get(`https://statsapi.mlb.com/api/v1.1/game/813024/feed/live`));
+    check("live teams", lf.away.abbr === "LAD" && lf.home.abbr === "TOR" && lf.away.r === 5, [lf.away, lf.home]);
+    check("live at-bat pitches", lf.pitches.length === 3 && lf.pitches.every(p => p.px !== null && p.code),
+          lf.pitches.length);
+    check("in-play pitch has EV", lf.pitches[2].inPlay && lf.pitches[2].ev !== null);
+    check("batter lines", lf.batter.name === "Alejandro Kirk" && lf.batter.today && lf.batter.avg, lf.batter);
+    check("pitcher mix sums ~100", Math.abs(lf.pitcher.mix.reduce((a, m) => a + m.pct, 0) - 100) <= 3,
+          lf.pitcher.mix);
+    check("postseason label", lf.seasonLabel === "POSTSEASON");
+    check("live tolerates junk", mlb.parseLive({}).pitches.length === 0);
+    check("shortPitch", mlb.shortPitch("Four-Seam Fastball") === "4-Seam FB");
+  }
+
   console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURES`);
   process.exit(failures === 0 ? 0 : 1);
 })().catch(e => { console.error("ERROR", e); process.exit(2); });

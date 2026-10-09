@@ -5,9 +5,15 @@ import qs.Commons
 // runner is on. Pure decoration for the live focus card.
 Item {
   id: diamond
+
+  // Plugin color scheme (Panel.qml): highlight + card wash follow the
+  // Omarchy theme, MLB navy/red, or classic, independent of the shell accent.
+  readonly property color hi: diamond.panel && diamond.panel.hi !== undefined ? diamond.panel.hi : Color.accent
+  function wash(a) { return diamond.panel && diamond.panel.wash ? diamond.panel.wash(a) : Util.alpha(Color.popups.text, a) }
   property bool on1: false
   property bool on2: false
   property bool on3: false
+  property var panel: null
 
   implicitWidth: Style.space(26)
   implicitHeight: Style.space(26)
@@ -27,9 +33,9 @@ Item {
       height: Style.space(7)
       rotation: 45
       radius: 1
-      color: modelData.on ? Color.accent : Qt.rgba(1, 1, 1, 0.16)
+      color: modelData.on ? diamond.hi : diamond.wash(0.16)
       border.width: 1
-      border.color: modelData.on ? Color.accent : Qt.rgba(1, 1, 1, 0.28)
+      border.color: modelData.on ? diamond.hi : diamond.wash(0.28)
     }
   }
 }

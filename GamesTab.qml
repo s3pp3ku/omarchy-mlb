@@ -11,6 +11,11 @@ import "mlb.js" as Mlb
 // clicking a row re-focuses it.
 Column {
   id: tab
+
+  // Plugin color scheme (Panel.qml): highlight + card wash follow the
+  // Omarchy theme, MLB navy/red, or classic, independent of the shell accent.
+  readonly property color hi: tab.panel && tab.panel.hi !== undefined ? tab.panel.hi : Color.accent
+  function wash(a) { return tab.panel && tab.panel.wash ? tab.panel.wash(a) : Util.alpha(Color.popups.text, a) }
   property var panel: null
   spacing: Style.space(6)
 
@@ -33,7 +38,7 @@ Column {
       var m = panel.nextMilestone()
       return m ? m.label + " " + panel.fmtLong(m.ms - panel.nowMs) : ""
     }
-    color: Color.accent
+    color: tab.hi
     font.family: Style.font.family
     font.pixelSize: Style.space(12)
     font.bold: true
@@ -46,9 +51,9 @@ Column {
     width: parent.width
     height: focusCol.implicitHeight + Style.space(12)
     radius: Style.space(6)
-    color: Qt.rgba(1, 1, 1, 0.04)
+    color: tab.wash(0.04)
     border.width: 1
-    border.color: panel.feedLive ? Color.accent : Qt.rgba(1, 1, 1, 0.12)
+    border.color: panel.feedLive ? tab.hi : tab.wash(0.12)
 
     Column {
       id: focusCol
@@ -124,7 +129,7 @@ Column {
             if (f.mode === "Final") return "Final"
             return "First pitch " + (panel.focusGame ? panel.fmtTime(panel.focusGame.startMs) : "")
           }
-          color: panel.feedLive ? Color.accent : Color.muted
+          color: panel.feedLive ? tab.hi : Color.muted
           font.family: Style.font.family
           font.pixelSize: Style.space(12)
           font.bold: panel.feedLive
@@ -151,6 +156,7 @@ Column {
           font.pixelSize: Style.space(12)
         }
         BaseDiamond {
+        panel: tab.panel
           on1: panel.feed ? panel.feed.on1 : false
           on2: panel.feed ? panel.feed.on2 : false
           on3: panel.feed ? panel.feed.on3 : false
@@ -283,7 +289,7 @@ Column {
     signal pick()
     height: rowCol.implicitHeight + Style.space(8)
     radius: Style.space(4)
-    color: mouse.containsMouse ? Qt.rgba(1, 1, 1, 0.06) : "transparent"
+    color: mouse.containsMouse ? tab.wash(0.06) : "transparent"
 
     readonly property bool focused: panel && panel.focusGame && game &&
                                      panel.focusGame.gamePk === game.gamePk
@@ -291,7 +297,7 @@ Column {
                                         (game.away.abbr === panel.favTeam ||
                                          game.home.abbr === panel.favTeam)
     function teamColor(side) {
-      if (panel && panel.favTeam && side && side.abbr === panel.favTeam) return Color.accent
+      if (panel && panel.favTeam && side && side.abbr === panel.favTeam) return tab.hi
       return Color.popups.text
     }
 
@@ -304,7 +310,7 @@ Column {
       anchors.left: parent.left
       anchors.leftMargin: Style.space(2)
       anchors.verticalCenter: parent.verticalCenter
-      color: Color.accent
+      color: tab.hi
     }
 
     MouseArea {
@@ -338,7 +344,7 @@ Column {
             if (g.mode === "final") return "Final"
             return panel ? panel.fmtTime(g.startMs) : ""
           }
-          color: gr.game.mode === "live" ? Color.accent : Color.popups.text
+          color: gr.game.mode === "live" ? tab.hi : Color.popups.text
           font.family: Style.font.family
           font.pixelSize: Style.space(12)
           font.bold: gr.game.mode === "live" || gr.focused
@@ -359,7 +365,7 @@ Column {
           width: Style.space(34)
           horizontalAlignment: Text.AlignRight
           text: gr.game.away ? gr.game.away.abbr : ""
-          color: gr.game.away && panel && panel.favTeam === gr.game.away.abbr ? Color.accent
+          color: gr.game.away && panel && panel.favTeam === gr.game.away.abbr ? tab.hi
                  : Color.popups.text
           font.family: Style.font.family
           font.pixelSize: Style.space(13)
@@ -371,7 +377,7 @@ Column {
           width: Style.space(22)
           horizontalAlignment: Text.AlignRight
           text: gr.game.away && gr.game.away.score !== null ? String(gr.game.away.score) : "-"
-          color: gr.game.mode === "live" ? Color.accent : Color.popups.text
+          color: gr.game.mode === "live" ? tab.hi : Color.popups.text
           font.family: Style.font.family
           font.pixelSize: Style.space(13)
           font.bold: true
@@ -393,7 +399,7 @@ Column {
           width: Style.space(34)
           horizontalAlignment: Text.AlignRight
           text: gr.game.home ? gr.game.home.abbr : ""
-          color: gr.game.home && panel && panel.favTeam === gr.game.home.abbr ? Color.accent
+          color: gr.game.home && panel && panel.favTeam === gr.game.home.abbr ? tab.hi
                  : Color.popups.text
           font.family: Style.font.family
           font.pixelSize: Style.space(13)
@@ -405,7 +411,7 @@ Column {
           width: Style.space(22)
           horizontalAlignment: Text.AlignRight
           text: gr.game.home && gr.game.home.score !== null ? String(gr.game.home.score) : "-"
-          color: gr.game.mode === "live" ? Color.accent : Color.popups.text
+          color: gr.game.mode === "live" ? tab.hi : Color.popups.text
           font.family: Style.font.family
           font.pixelSize: Style.space(13)
           font.bold: true
@@ -435,6 +441,9 @@ Column {
           var g = gr.game
           if (!g || !g.startMs) return ""
           var bits = [Qt.formatDateTime(new Date(g.startMs), "ddd d MMM")]
+          // Where it's on, for anything not over yet.
+          if (g.mode !== "final" && g.media && g.media.tv.length)
+            bits.push(panel.safe(g.media.tv.slice(0, 2).join(", "), 36))
           var p = panel && panel.feeds ? panel.feeds[g.gamePk] : null
           if (g.mode === "preview") {
             if (p && (p.awayProbable || p.homeProbable))

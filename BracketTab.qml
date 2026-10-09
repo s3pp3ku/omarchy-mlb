@@ -6,25 +6,77 @@ import qs.Ui
 // under the cards. Geometry comes from mlb.js buildBracketLayout — the
 // Canvas and the card Repeater both render that one model, so they can't
 // drift apart.
+//
+// Once the World Series is decided the tab leads with ChampionRecap (the
+// champion card, their road, the Series game by game); the finished bracket
+// is one click away on the sub-toggle.
 Column {
   id: tab
+
+  // Plugin color scheme (Panel.qml): highlight + card wash follow the
+  // Omarchy theme, MLB navy/red, or classic, independent of the shell accent.
+  readonly property color hi: tab.panel && tab.panel.hi !== undefined ? tab.panel.hi : Color.accent
+  function wash(a) { return tab.panel && tab.panel.wash ? tab.panel.wash(a) : Util.alpha(Color.popups.text, a) }
   property var panel: null
   spacing: Style.space(8)
 
-  // Champion banner, once the World Series is decided.
+  property string subView: "recap"
+  readonly property bool hasChamp: panel !== null && panel.champPath !== null
+  readonly property bool showBracket: panel !== null && panel.series.length > 0 &&
+                                      (!hasChamp || subView === "bracket")
+
+  Item {
+    visible: tab.hasChamp
+    width: parent.width
+    height: subToggle.implicitHeight
+    ButtonGroup {
+      id: subToggle
+      options: [
+        { value: "recap", label: "Champions" },
+        { value: "bracket", label: "Bracket" }
+      ]
+      value: tab.subView
+      focusable: false
+      foreground: Color.popups.text
+      background: Color.popups.background
+      accent: tab.hi
+      fontSize: Style.space(11)
+      onChanged: function(v) { tab.subView = v }
+    }
+    Text {
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      textFormat: Text.PlainText
+      text: panel ? panel.bracketSeason + " POSTSEASON" : ""
+      color: Color.muted
+      font.family: Style.font.family
+      font.pixelSize: Style.space(11)
+      font.bold: true
+      font.letterSpacing: Style.space(2)
+    }
+  }
+
+  ChampionRecap {
+    panel: tab.panel
+    width: parent.width
+    visible: tab.hasChamp && tab.subView === "recap"
+  }
+
+  // Champion banner above the finished bracket.
   Row {
-    visible: panel !== null && panel.champion() !== null
+    visible: tab.showBracket && tab.hasChamp
     spacing: Style.space(7)
     Text {
       textFormat: Text.PlainText
       text: panel.trophy
-      color: Color.accent
+      color: tab.hi
       font.family: Style.font.family
       font.pixelSize: Style.space(13)
     }
     Text {
       textFormat: Text.PlainText
-      text: panel.champion() ? panel.safe(panel.champion().name, 30) + " win the World Series" : ""
+      text: panel.champion() ? panel.safe(panel.champion().name, 30) + " win the " +
+                               panel.bracketSeason + " World Series" : ""
       color: Color.popups.text
       font.family: Style.font.family
       font.pixelSize: Style.space(13)
@@ -51,14 +103,14 @@ Column {
       var m = panel.nextMilestone()
       return m ? m.label + " " + panel.fmtLong(m.ms - panel.nowMs) : ""
     }
-    color: Color.accent
+    color: tab.hi
     font.family: Style.font.family
     font.pixelSize: Style.space(12)
     font.bold: true
   }
 
   Item {
-    visible: panel !== null && panel.series.length > 0
+    visible: tab.showBracket
     width: parent.width
     height: bracketBox.height + 2
 
@@ -102,15 +154,16 @@ Column {
   // slots muted "TBD".
   // Legend fills the fixed-size panel's lower half and explains the marks.
   Column {
-    visible: panel !== null && panel.series.length > 0
+    visible: tab.showBracket
     width: parent.width
     spacing: Style.space(3)
     Row {
+      visible: !tab.hasChamp
       spacing: Style.space(6)
       Text {
         textFormat: Text.PlainText
         text: "\u25CF"
-        color: Color.accent
+        color: tab.hi
         font.family: Style.font.family
         font.pixelSize: Style.space(11)
       }
@@ -140,9 +193,9 @@ Column {
     width: card.w || 124
     height: card.h || 74
     radius: Style.space(5)
-    color: hoverSc.containsMouse ? Qt.rgba(1, 1, 1, 0.07) : Qt.rgba(1, 1, 1, 0.035)
+    color: hoverSc.containsMouse ? tab.wash(0.07) : tab.wash(0.035)
     border.width: 1
-    border.color: s && s.mode === "live" ? Color.accent : Qt.rgba(1, 1, 1, 0.1)
+    border.color: s && s.mode === "live" ? tab.hi : tab.wash(0.1)
 
     function statusText() {
       if (!s) return ""
@@ -213,7 +266,7 @@ Column {
           id: statusText
           textFormat: Text.PlainText
           text: sc.statusText()
-          color: sc.s && sc.s.mode === "live" ? Color.accent : Color.muted
+          color: sc.s && sc.s.mode === "live" ? tab.hi : Color.muted
           font.family: Style.font.family
           font.pixelSize: Style.space(11)
           font.bold: sc.s && sc.s.mode === "live"
@@ -241,7 +294,7 @@ Column {
               textFormat: Text.PlainText
               text: modelData.abbr
               color: modelData.placeholder ? Color.muted
-                     : sc.isFav(modelData) ? Color.accent
+                     : sc.isFav(modelData) ? tab.hi
                      : Color.popups.text
               font.family: Style.font.family
               font.pixelSize: Style.space(14)
@@ -254,7 +307,7 @@ Column {
             anchors.verticalCenter: parent.verticalCenter
             textFormat: Text.PlainText
             text: String(sc.winsFor(modelData))
-            color: sc.isWinner(modelData) ? Color.accent : Color.muted
+            color: sc.isWinner(modelData) ? tab.hi : Color.muted
             font.family: Style.font.family
             font.pixelSize: Style.space(14)
             font.bold: sc.isWinner(modelData)

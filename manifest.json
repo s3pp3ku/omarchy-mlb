@@ -2,12 +2,12 @@
   "schemaVersion": 1,
   "id": "s3pp3ku.mlb",
   "name": "MLB",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "author": "s3pp3ku",
   "license": "MIT",
   "homepage": "https://github.com/s3pp3ku/omarchy-mlb",
   "repository": "https://github.com/s3pp3ku/omarchy-mlb",
-  "description": "MLB bar widget with playoff bracket, live game details, season-long team stats and player leaders, Statcast highlights, daily odds, and a spring-training countdown.",
+  "description": "MLB bar widget with a live pitch-by-pitch at-bat view, playoff bracket, live game details, Baseball Savant percentiles and leaderboards, season-long team stats and player leaders, Statcast highlights, daily odds, and a spring-training countdown.",
   "keywords": [
     "mlb",
     "baseball",
@@ -29,7 +29,7 @@
   },
   "barWidget": {
     "displayName": "MLB",
-    "description": "Baseball pill with live scores, full-season team/player stats, Statcast, odds, and spring countdown.",
+    "description": "Baseball pill with a live pitch-by-pitch view, schedule with TV listings, Statcast + Baseball Savant stats, odds, in-widget radio, playoffs, and theme-aware colors.",
     "category": "Info",
     "aliases": [
       "mlb",
@@ -47,7 +47,8 @@
       "teamColors": true,
       "popupPosition": "icon",
       "notifyFavorite": false,
-      "oddsBudget": 31
+      "oddsBudget": 31,
+      "colorScheme": "theme"
     },
     "schema": [
       {
@@ -62,24 +63,32 @@
         "label": "Default tab",
         "options": [
           {
-            "value": "bracket",
-            "label": "Bracket"
+            "value": "live",
+            "label": "Live"
           },
           {
             "value": "games",
-            "label": "Games"
+            "label": "Schedule"
           },
           {
             "value": "statcast",
-            "label": "Statcast"
+            "label": "Stats"
+          },
+          {
+            "value": "odds",
+            "label": "Odds"
+          },
+          {
+            "value": "radio",
+            "label": "Radio"
           },
           {
             "value": "season",
             "label": "Season"
           },
           {
-            "value": "odds",
-            "label": "Odds"
+            "value": "bracket",
+            "label": "Playoffs"
           }
         ],
         "defaultValue": "bracket"
@@ -103,8 +112,28 @@
       {
         "key": "teamColors",
         "type": "boolean",
-        "label": "Show team colors",
+        "label": "Show team colors (club stripes; independent of theme)",
         "defaultValue": true
+      },
+      {
+        "key": "colorScheme",
+        "type": "enum",
+        "label": "Colors (also switchable from the chip in the popup header)",
+        "options": [
+          {
+            "value": "theme",
+            "label": "Follow Omarchy theme"
+          },
+          {
+            "value": "mlb",
+            "label": "MLB red, white & navy"
+          },
+          {
+            "value": "classic",
+            "label": "Classic Gameday / Savant"
+          }
+        ],
+        "defaultValue": "theme"
       },
       {
         "key": "popupPosition",

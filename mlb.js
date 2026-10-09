@@ -68,6 +68,7 @@ function parseGame(g) {
 
   var dec = g.decisions || {};
   var startMs = Date.parse(g.gameDate || "");
+  var away = side(g.teams.away, "away"), home = side(g.teams.home, "home");
   return {
     gamePk: g.gamePk,
     gameType: g.gameType || "",
@@ -77,8 +78,9 @@ function parseGame(g) {
     detail: status.detailedState || "",
     desc: g.description || "",
     seriesDesc: g.seriesDescription || "",
-    away: side(g.teams.away, "away"),
-    home: side(g.teams.home, "home"),
+    away: away,
+    home: home,
+    media: parseBroadcasts(g.broadcasts, away.abbr, home.abbr),
     inning: typeof ls.currentInning === "number" ? ls.currentInning : null,
     inningState: ls.inningState || "",
     isTop: ls.isTopInning === true,
@@ -90,6 +92,85 @@ function parseGame(g) {
     saveName: dec.save ? dec.save.fullName : "",
     venue: g.venue ? g.venue.name : ""
   };
+}
+
+// Schedule `broadcasts` (hydrate=broadcasts(all)) → where to watch/listen.
+// National feeds by name; local ones prefixed with the club they belong to
+// ("TOR Sportsnet"). Both teams' rows repeat national feeds, so dedupe.
+// Spanish-language TV and radio are split out so the English line stays short.
+function parseBroadcasts(list, awayAbbr, homeAbbr) {
+  // stations: every radio feed as a structured row for the Radio tab.
+  var out = { tv: [], radio: [], spanish: [], stations: [] }
+  var seen = {}
+  var rows = (list || []).slice(0, 40)
+  // National first, then away, then home — the order a viewer scans for.
+  function rank(b) { return b.isNational ? 0 : (b.homeAway === "away" ? 1 : 2) }
+  rows.sort(function(a, b) { return rank(a) - rank(b) })
+  for (var i = 0; i < rows.length; i++) {
+    var b = rows[i]
+    var name = String(b.name || b.callSign || "").replace(/\s*\/\s*/g, "/")
+                 .replace(/,?\s*presented by .*$/i, "").trim()
+    if (!name) continue
+    var isTv = b.type === "TV"
+    var label = b.isNational ? name
+              : ((b.homeAway === "away" ? awayAbbr : homeAbbr) || "") + " " + name
+    label = label.trim()
+    var bucket = b.language === "es" ? "spanish" : (isTv ? "tv" : "radio")
+    var key = bucket + "|" + label.toLowerCase()
+    if (seen[key]) continue
+    seen[key] = true
+    out[bucket].push(label)
+    if (!isTv)
+      out.stations.push({ name: name, lang: b.language === "es" ? "es" : "en",
+                          national: b.isNational === true,
+                          side: b.isNational ? "" : (b.homeAway === "away" ? "away" : "home"),
+                          abbr: b.isNational ? "" : (b.homeAway === "away" ? awayAbbr : homeAbbr) || "",
+                          query: stationQuery(b.callSign, name) })
+  }
+  return out
+}
+
+// What to type into a station directory for a radio feed: the FCC call
+// letters when there are some ("KLAC AM570" → KLAC), else the on-air name
+// ("104.3 The Score", "ESPN Radio").
+function stationQuery(callSign, name) {
+  var m = /\b([KW][A-Z]{2,3})\b/.exec(String(callSign || "") + " " + String(name || ""))
+  return m ? m[1] : String(name || callSign || "").trim()
+}
+
+// Radio Browser (radio-browser.info) search results → the one stream to
+// play for a station query, or null. Community-maintained data, so match
+// strictly: the query must appear as whole words in the station name ("WTAM"
+// must not match "fmrainbowtamil"), the last health check must have passed,
+// the URL must be plain http(s), and US/Canadian listings win over others.
+function pickStream(results, query) {
+  var q = String(query || "").trim()
+  if (!q || !results || !results.length) return null
+  var esc = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  var word = new RegExp("(^|[^A-Za-z0-9])" + esc + "($|[^A-Za-z0-9])", "i")
+  var best = null, bestScore = -1
+  for (var i = 0; i < results.length && i < 50; i++) {
+    var s = results[i]
+    if (!s || s.lastcheckok !== 1) continue
+    var url = String(s.url_resolved || s.url || "")
+    if (!/^https?:\/\/[^\s"'<>]+$/.test(url) || url.length > 500) continue
+    var name = String(s.name || "")
+    if (!word.test(name)) continue
+    var cc = String(s.countrycode || "").toUpperCase()
+    var score = (cc === "US" || cc === "CA" ? 1000000 : 0) +
+                (/^(AAC|AAC\+|MP3)$/i.test(String(s.codec || "")) ? 100000 : 0) +
+                Math.min(99999, s.clickcount | 0)
+    if (score > bestScore) { bestScore = score; best = s }
+  }
+  if (!best) return null
+  return {
+    uuid: String(best.stationuuid || ""),
+    name: String(best.name || "").trim(),
+    url: String(best.url_resolved || best.url),
+    codec: String(best.codec || ""),
+    bitrate: best.bitrate | 0,
+    state: String(best.state || "")
+  }
 }
 
 function flatGames(payload) {
@@ -344,6 +425,25 @@ function selectorGames(games, max) {
   return live.concat(todays, past, future).slice(0, cap)
 }
 
+// Matchup switcher for the Live tab: every live game first (earliest first
+// pitch first), then today's games still to come, then today's finals with
+// the most recently finished leading. Capped so the chip row stays short.
+function switcherGames(games, max) {
+  var live = [], later = [], done = []
+  for (var i = 0; i < (games || []).length; i++) {
+    var g = games[i]
+    if (g.mode === "live") live.push(g)
+    else if (!isToday(g.startMs)) continue
+    else if (g.mode === "final") done.push(g)
+    else later.push(g)
+  }
+  function byTime(a, b) { return a.startMs - b.startMs }
+  live.sort(byTime)
+  later.sort(byTime)
+  done.sort(function(a, b) { return b.startMs - a.startMs })
+  return live.concat(later, done).slice(0, max || 15)
+}
+
 // If the game we were following just flipped live → final, return its pk so
 // the caller can pin it briefly — otherwise Statcast blanks the instant the
 // last out lands instead of keeping the final numbers up.
@@ -472,6 +572,546 @@ function buildBracketLayout(series) {
            width: colX[3] + W, height: yNLb + H };
 }
 
+// --- Postseason recap -------------------------------------------------------
+// A season's postseason payload exists long before the field is set (every
+// slot is "AL Seed 3" etc.), so "has data" isn't "has started": the bracket
+// only counts once at least one series names a real club.
+function hasRealTeams(series) {
+  for (var i = 0; i < (series || []).length; i++)
+    if (series[i].realTeams && series[i].realTeams.length) return true
+  return false
+}
+
+var ROUND_NAMES = { WC: "Wild Card", DS: "Division Series", CS: "Championship Series", WS: "World Series" }
+
+function roundName(round, league) {
+  if (round === "WS") return ROUND_NAMES.WS
+  if (round === "WC") return league + " Wild Card"
+  return league + (round === "DS" ? "DS" : "CS")
+}
+
+// The champion's run through the bracket, once the World Series is clinched:
+// one row per round (WC → WS, with a bye row when the club skipped the Wild
+// Card), the overall postseason record, and the World Series game by game.
+// Returns null while the title is undecided.
+function championPath(series) {
+  var ws = null
+  for (var i = 0; i < (series || []).length; i++)
+    if (series[i].round === "WS" && series[i].clinched !== null) ws = series[i]
+  if (!ws) return null
+  var id = ws.clinched
+
+  // Resolve a club's side object from any game it played in a series.
+  function sideOf(s, teamId) {
+    for (var k = 0; k < s.games.length; k++) {
+      var g = s.games[k]
+      if (g.away.id === teamId) return g.away
+      if (g.home.id === teamId) return g.home
+    }
+    return teamRef(teamId, "")
+  }
+  function lastFinal(s) {
+    for (var k = s.games.length - 1; k >= 0; k--)
+      if (s.games[k].mode === "final") return s.games[k]
+    return null
+  }
+
+  var champ = sideOf(ws, id)
+  var team = { id: id, abbr: champ.abbr,
+               name: TEAMS[id] ? TEAMS[id].name : champ.name,
+               color: champ.color }
+
+  var lg = TEAMS[id] ? TEAMS[id].lg : ""
+  var rounds = [], wins = 0, losses = 0, anyWc = false
+  var order = ["WC", "DS", "CS", "WS"]
+  for (var r = 0; r < order.length; r++) {
+    var found = null
+    for (i = 0; i < series.length; i++) {
+      var s = series[i]
+      if (s.round !== order[r]) continue
+      if (order[r] === "WC") anyWc = true
+      if (s.realTeams.indexOf(id) >= 0) { found = s; break }
+    }
+    if (!found) {
+      // Division winners with a top-two seed skip the Wild Card round.
+      if (order[r] === "WC" && anyWc)
+        rounds.push({ round: "WC", name: lg ? lg + " Wild Card" : "Wild Card", bye: true })
+      continue
+    }
+    var oppId = 0
+    for (var t = 0; t < found.realTeams.length; t++)
+      if (found.realTeams[t] !== id) oppId = found.realTeams[t]
+    var opp = sideOf(found, oppId)
+    var won = found.wins[id] || 0, lost = oppId ? (found.wins[oppId] || 0) : 0
+    var clincher = lastFinal(found)
+    wins += won
+    losses += lost
+    rounds.push({ round: order[r], name: roundName(order[r], found.league), bye: false,
+                  opp: { id: oppId, abbr: opp.abbr, name: TEAMS[oppId] ? TEAMS[oppId].name : opp.name,
+                         color: opp.color },
+                  won: won, lost: lost, clinchPk: clincher ? clincher.gamePk : 0 })
+  }
+  var wsGames = [], n = 0
+  for (i = 0; i < ws.games.length; i++) {
+    var g = ws.games[i]
+    if (g.mode !== "final" || g.away.score === null || g.home.score === null) continue
+    n++
+    wsGames.push({ n: n, gamePk: g.gamePk, startMs: g.startMs, venue: g.venue,
+                   away: g.away, home: g.home,
+                   winnerId: g.away.score > g.home.score ? g.away.id : g.home.id,
+                   winnerName: g.winnerName, loserName: g.loserName, clincher: false })
+  }
+  var last = wsGames.length ? wsGames[wsGames.length - 1] : null
+  if (last) last.clincher = true
+
+  var wsRound = rounds[rounds.length - 1]
+  return {
+    team: team,
+    opp: wsRound.opp,
+    wsWon: wsRound.won,
+    wsLost: wsRound.lost,
+    rounds: rounds,
+    wins: wins,
+    losses: losses,
+    wsGames: wsGames,
+    clinchMs: last ? last.startMs : 0
+  }
+}
+
+// /awards/<id>/recipients payload → the season's winner, or null before it's
+// announced (the World Series MVP lands minutes to hours after the last out).
+function parseAwardWinner(payload) {
+  var a = payload && payload.awards && payload.awards[0]
+  if (!a || !a.player) return null
+  var name = a.player.nameFirstLast || a.player.fullName || ""
+  if (!name) return null
+  var tid = a.team && a.team.id
+  var pos = a.player.primaryPosition && a.player.primaryPosition.abbreviation
+  return { name: name, teamAbbr: TEAMS[tid] ? TEAMS[tid].abbr : "", pos: pos || "" }
+}
+
+// --- Baseball Savant ---------------------------------------------------------
+// Savant has no official API; these are the CSV/JSON exports behind its
+// leaderboards and Gamefeed pages. Every parser tolerates missing columns and
+// returns empty results rather than throwing, so a format change blanks one
+// section instead of the tab.
+
+// RFC 4180-ish: quoted fields, "" escapes, commas/newlines inside quotes, BOM.
+function parseCsv(text) {
+  var src = String(text || "").replace(/^﻿/, "")
+  var rows = [], row = [], field = "", q = false
+  for (var i = 0; i < src.length; i++) {
+    var c = src.charAt(i)
+    if (q) {
+      if (c === '"') {
+        if (src.charAt(i + 1) === '"') { field += '"'; i++ }
+        else q = false
+      } else field += c
+    } else if (c === '"') q = true
+    else if (c === ",") { row.push(field); field = "" }
+    else if (c === "\n" || c === "\r") {
+      if (c === "\r" && src.charAt(i + 1) === "\n") i++
+      row.push(field); field = ""
+      if (row.length > 1 || row[0] !== "") rows.push(row)
+      row = []
+    } else field += c
+  }
+  if (field !== "" || row.length) { row.push(field); rows.push(row) }
+  if (!rows.length) return []
+  var head = rows[0], out = []
+  for (i = 1; i < rows.length; i++) {
+    var o = {}
+    for (var j = 0; j < head.length; j++) o[head[j]] = rows[i][j] === undefined ? "" : rows[i][j]
+    out.push(o)
+  }
+  return out
+}
+
+function num(v) {
+  if (v === null || v === undefined || v === "") return null
+  var n = parseFloat(v)
+  return isFinite(n) ? n : null
+}
+
+// "Crow-Armstrong, Pete" → "Pete Crow-Armstrong".
+function firstLast(name) {
+  var s = String(name || "")
+  var i = s.indexOf(", ")
+  return i < 0 ? s : s.slice(i + 2) + " " + s.slice(0, i)
+}
+
+function rowName(r) {
+  return firstLast(r["last_name, first_name"] || r.player_name || r.name || "")
+}
+
+// Percentile rankings: id → { name, pct: {column: 0-100} }. Savant already
+// orients every column so higher = better (a low-strikeout hitter is ~100).
+function parsePercentiles(text) {
+  var rows = parseCsv(text), out = {}
+  for (var i = 0; i < rows.length; i++) {
+    var r = rows[i], id = parseInt(r.player_id, 10)
+    if (!id) continue
+    var pct = {}
+    for (var k in r) {
+      if (k === "player_id" || k === "player_name" || k === "year") continue
+      var v = num(r[k])
+      if (v !== null) pct[k] = v
+    }
+    out[id] = { name: rowName(r), pct: pct }
+  }
+  return out
+}
+
+var PCT_BATTER = [["xwoba", "xwOBA"], ["xba", "xBA"], ["exit_velocity", "Avg Exit Velo"],
+                  ["brl_percent", "Barrel %"], ["hard_hit_percent", "Hard-Hit %"],
+                  ["bat_speed", "Bat Speed"], ["k_percent", "K %"], ["bb_percent", "BB %"],
+                  ["whiff_percent", "Whiff %"], ["chase_percent", "Chase %"],
+                  ["sprint_speed", "Sprint Speed"]]
+var PCT_PITCHER = [["xera", "xERA"], ["xwoba", "xwOBA"], ["fb_velocity", "Fastball Velo"],
+                   ["fb_spin", "Fastball Spin"], ["k_percent", "K %"], ["bb_percent", "BB %"],
+                   ["whiff_percent", "Whiff %"], ["chase_percent", "Chase %"],
+                   ["brl_percent", "Barrel %"], ["hard_hit_percent", "Hard-Hit %"]]
+
+// [{label, pct}] for one player, in the spec's order, skipping blanks.
+function percentileBars(entry, kind) {
+  if (!entry || !entry.pct) return []
+  var spec = kind === "pitcher" ? PCT_PITCHER : PCT_BATTER, out = []
+  for (var i = 0; i < spec.length; i++) {
+    var v = entry.pct[spec[i][0]]
+    if (typeof v === "number") out.push({ key: spec[i][0], label: spec[i][1], pct: Math.round(v) })
+  }
+  return out
+}
+
+// Season leaderboards from five CSV exports, each reduced to a top 5.
+// parts: { xstats, statcast, bat, sprint, oaa } (raw CSV text, any may be "").
+function savantLeaderboards(parts) {
+  var out = []
+  function top(rows, col, label, fmt, opts) {
+    opts = opts || {}
+    var list = []
+    for (var i = 0; i < rows.length; i++) {
+      var v = opts.value ? opts.value(rows[i]) : num(rows[i][col])
+      if (v === null) continue
+      list.push({ name: rowName(rows[i]), value: v,
+                  team: rows[i].team || rows[i].display_team_name || "" })
+    }
+    list.sort(function(a, b) { return opts.asc ? a.value - b.value : b.value - a.value })
+    list = list.slice(0, 5).map(function(e) {
+      return { name: e.name, team: e.team, value: fmt(e.value) }
+    })
+    if (list.length) out.push({ key: label, label: label, hint: opts.hint || "", rows: list })
+  }
+  function rate3(v) { return v.toFixed(3).replace(/^0/, "") }
+  function signed3(v) { return (v > 0 ? "+" : "−") + Math.abs(v).toFixed(3).replace(/^0/, "") }
+  function pct1(v) { return v.toFixed(1) + "%" }
+  function mph(v) { return v.toFixed(1) + " mph" }
+
+  var xs = parseCsv(parts.xstats), sc = parseCsv(parts.statcast)
+  var bt = parseCsv(parts.bat), sp = parseCsv(parts.sprint), oa = parseCsv(parts.oaa)
+  top(xs, "est_woba", "xwOBA", rate3, { hint: "expected wOBA from quality of contact" })
+  top(sc, "brl_percent", "BARREL %", pct1, { hint: "per batted ball" })
+  top(sc, "max_hit_speed", "MAX EXIT VELO", mph)
+  top(bt, "avg_bat_speed", "BAT SPEED", mph, { hint: "average competitive swing" })
+  top(sp, "sprint_speed", "SPRINT SPEED", function(v) { return v.toFixed(1) + " ft/s" })
+  top(oa, "outs_above_average", "OUTS ABOVE AVG", function(v) { return (v > 0 ? "+" : "") + v })
+  // Luck: actual wOBA minus expected. Positive = results outran contact.
+  function luck(r) {
+    var a = num(r.woba), e = num(r.est_woba)
+    return a === null || e === null ? null : a - e
+  }
+  top(xs, "", "LUCKIEST", signed3, { value: luck, hint: "wOBA above xwOBA" })
+  top(xs, "", "UNLUCKIEST", signed3, { value: luck, asc: true, hint: "wOBA below xwOBA" })
+  return out
+}
+
+var HIT_EVENTS = { "Single": 1, "Double": 1, "Triple": 1, "Home Run": 1 }
+
+// Savant Gamefeed (/gf?game_pk=) → the per-ball extras the MLB feed lacks:
+// expected batting average on every batted ball, barrels, bat speed,
+// "home run in N/30 parks", and spin rates for each starter's arsenal.
+function parseSavantGame(payload, awayId, homeId) {
+  var empty = { barrels: { away: 0, home: 0 }, hardOuts: [], cheapHits: [], nearHrs: [],
+                swings: [], arsenals: [], batted: 0 }
+  if (!payload || !payload.exit_velocity) return empty
+  var hid = homeId || payload.team_home_id, aid = awayId || payload.team_away_id
+  var bb = payload.exit_velocity || []
+  var out = empty
+  function side(teamId) { return teamId === hid ? "home" : "away" }
+  for (var i = 0; i < bb.length && i < 200; i++) {
+    var e = bb[i]
+    var ev = num(e.hit_speed !== undefined ? e.hit_speed : e.launch_speed)
+    var xba = num(e.xba)
+    var row = { player: String(e.batter_name || ""), event: String(e.events || ""),
+                ev: ev, xba: xba, dist: num(e.hit_distance), la: num(e.launch_angle),
+                side: side(e.team_batting_id), batSpeed: num(e.batSpeed),
+                parks: e.contextMetrics ? num(e.contextMetrics.homeRunBallparks) : null }
+    out.batted++
+    if (e.is_barrel === 1 || e.is_barrel === true) out.barrels[row.side]++
+    var isHit = HIT_EVENTS.hasOwnProperty(row.event)
+    if (!isHit && ev !== null && xba !== null) out.hardOuts.push(row)
+    if (isHit && xba !== null) out.cheapHits.push(row)
+    if (row.event !== "Home Run" && row.parks !== null && row.parks > 0) out.nearHrs.push(row)
+    if (row.batSpeed !== null) out.swings.push(row)
+  }
+  out.hardOuts.sort(function(a, b) { return b.xba - a.xba || b.ev - a.ev })
+  out.hardOuts = out.hardOuts.slice(0, 3)
+  out.cheapHits.sort(function(a, b) { return a.xba - b.xba })
+  out.cheapHits = out.cheapHits.slice(0, 3)
+  out.nearHrs.sort(function(a, b) { return b.parks - a.parks })
+  out.nearHrs = out.nearHrs.slice(0, 3)
+  out.swings.sort(function(a, b) { return b.batSpeed - a.batSpeed })
+  out.swings = out.swings.slice(0, 3)
+
+  // Arsenals: the first pitcher to appear for each fielding side (the
+  // starter), grouped by pitch name with count, average velo and spin.
+  var pitches = (payload.team_home || []).concat(payload.team_away || [])
+  pitches.sort(function(a, b) { return (a.game_total_pitches || 0) - (b.game_total_pitches || 0) })
+  var starter = {}, by = {}
+  for (i = 0; i < pitches.length && i < 600; i++) {
+    var p = pitches[i], sd = side(p.team_fielding_id)
+    if (!starter[sd]) starter[sd] = { id: p.pitcher, name: String(p.pitcher_name || "") }
+    if (p.pitcher !== starter[sd].id) continue
+    var key = sd + "|" + (p.pitch_name || p.pitch_type || "?")
+    if (!by[key]) by[key] = { side: sd, type: String(p.pitch_name || p.pitch_type || "?"),
+                              n: 0, velo: 0, vn: 0, spin: 0, sn: 0 }
+    var b = by[key], v = num(p.start_speed), sp = num(p.spin_rate)
+    b.n++
+    if (v !== null) { b.velo += v; b.vn++ }
+    if (sp !== null) { b.spin += sp; b.sn++ }
+  }
+  ;["away", "home"].forEach(function(sd) {
+    if (!starter[sd]) return
+    var mix = [], total = 0
+    for (var k in by) if (by[k].side === sd) { mix.push(by[k]); total += by[k].n }
+    mix.sort(function(a, b) { return b.n - a.n })
+    out.arsenals.push({ side: sd, pitcher: starter[sd].name, total: total,
+      mix: mix.map(function(m) {
+        return { type: m.type, n: m.n, pct: total ? Math.round(m.n / total * 100) : 0,
+                 velo: m.vn ? Math.round(m.velo / m.vn * 10) / 10 : null,
+                 spin: m.sn ? Math.round(m.spin / m.sn) : null }
+      }) })
+  })
+  return out
+}
+
+// Pitch-type colors, close to the Savant/Gameday palette so the strike-zone
+// dots read the same way they do on MLB's own apps.
+var PITCH_COLORS = {
+  FF: "#D22D49", SI: "#FE9D00", FC: "#933F2C", SL: "#EEE716", ST: "#DDB33A",
+  SV: "#93AFD4", CU: "#00D1ED", KC: "#6236CD", CS: "#0068FF", CH: "#1DBE3A",
+  FS: "#3BACAC", FO: "#55CCAB", KN: "#3C44CD", SC: "#60DB33", EP: "#888888"
+}
+function pitchColor(code) { return PITCH_COLORS[code] || "#9AA0A6" }
+// Fit long pitch names into narrow columns: "Four-Seam Fastball" → "4-Seam FB".
+function shortPitch(name) {
+  return String(name || "").replace(/^(Four|4)-Seam Fastball$/, "4-Seam FB")
+    .replace(/^Knuckle Curve$/, "Knuckle CB")
+}
+var PITCH_CODE_BY_NAME = {
+  "4-Seam Fastball": "FF", "Four-Seam Fastball": "FF", "Sinker": "SI", "Cutter": "FC",
+  "Slider": "SL", "Sweeper": "ST", "Slurve": "SV", "Curveball": "CU", "Knuckle Curve": "KC",
+  "Slow Curve": "CS", "Changeup": "CH", "Split-Finger": "FS", "Splitter": "FS", "Forkball": "FO",
+  "Knuckleball": "KN", "Screwball": "SC", "Eephus": "EP"
+}
+
+// --- Omarchy theme palette ---------------------------------------------------
+// The shell's Color singleton exposes only foreground/background/accent/
+// urgent/muted; the theme's colors.toml carries the full named palette (red,
+// green, blue, ... plus bright_* variants and mode = "dark"|"light"). Parsed
+// here so every status color in the widget follows the active theme.
+function parseThemeColors(text) {
+  var out = {}
+  var lines = String(text || "").split("\n")
+  for (var i = 0; i < lines.length && i < 400; i++) {
+    var m = /^\s*([A-Za-z0-9_]+)\s*=\s*["']?(#[0-9A-Fa-f]{6}|dark|light)["']?/.exec(lines[i])
+    if (m) out[m[1]] = m[2]
+  }
+  // Terminal-palette themes name colors color0..color15 instead.
+  var ansi = { red: 1, green: 2, yellow: 3, blue: 4, magenta: 5, cyan: 6,
+               bright_red: 9, bright_green: 10, bright_yellow: 11, bright_blue: 12,
+               bright_magenta: 13, bright_cyan: 14 }
+  for (var k in ansi) if (!out[k] && out["color" + ansi[k]]) out[k] = out["color" + ansi[k]]
+  if (!out.orange) out.orange = out.bright_red || out.yellow
+  return out
+}
+
+// Pitch families onto theme hues: fastballs warm (red/orange), breaking
+// balls yellow → cyan → blue, offspeed green, the oddballs magenta.
+var THEME_PITCH = {
+  FF: "red", SI: "orange", FC: "bright_red",
+  SL: "yellow", ST: "bright_yellow", SV: "bright_cyan",
+  CU: "cyan", KC: "blue", CS: "bright_blue",
+  CH: "green", FS: "bright_green", FO: "bright_green",
+  KN: "magenta", SC: "bright_magenta", EP: "magenta"
+}
+function themePitchColor(code, pal) {
+  var key = THEME_PITCH[code]
+  var c = key && pal ? (pal[key] || pal[key.replace("bright_", "")]) : ""
+  return c || pitchColor(code)
+}
+
+function hexRgb(h) {
+  var m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(String(h || ""))
+  return m ? [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)] : null
+}
+
+// Percentile slider color between three anchors (poor / average / elite).
+// Defaults are Savant's; theme mode passes the theme's blue / muted / red.
+function percentileColor(p, lowHex, midHex, highHex) {
+  var t = Math.max(0, Math.min(100, p)) / 100
+  var lo = hexRgb(lowHex) || [50, 98, 199]
+  var mid = hexRgb(midHex) || [178, 178, 178]
+  var hi = hexRgb(highHex) || [214, 41, 52]
+  var a = t < 0.5 ? lo : mid, b = t < 0.5 ? mid : hi, u = t < 0.5 ? t * 2 : (t - 0.5) * 2
+  function h(x) { var s = Math.round(x).toString(16); return s.length < 2 ? "0" + s : s }
+  return "#" + h(a[0] + (b[0] - a[0]) * u) + h(a[1] + (b[1] - a[1]) * u) + h(a[2] + (b[2] - a[2]) * u)
+}
+
+// --- Live at-bat (the Live tab) ---------------------------------------------
+// From the same MLB feed as parseFeed: the current plate appearance pitch by
+// pitch (location in feet from the plate center, type, speed, call, contact
+// numbers), who's hitting and pitching with today's and season lines, the
+// pitcher's mix in this game, and the batter's earlier trips today.
+function parseLive(payload) {
+  var ld = (payload && payload.liveData) || {}
+  var gd = (payload && payload.gameData) || {}
+  var ls = ld.linescore || {}
+  var plays = (ld.plays && ld.plays.allPlays) || []
+  var cur = (ld.plays && ld.plays.currentPlay) || (plays.length ? plays[plays.length - 1] : null)
+  var box = (ld.boxscore && ld.boxscore.teams) || {}
+  var players = gd.players || {}
+  var off = ls.offense || {}
+  var gtype = gd.game && gd.game.type ? gd.game.type : "R"
+
+  function boxPlayer(id) {
+    var k = "ID" + id
+    if (box.away && box.away.players && box.away.players[k]) return box.away.players[k]
+    if (box.home && box.home.players && box.home.players[k]) return box.home.players[k]
+    return null
+  }
+  function bio(id) {
+    var p = players["ID" + id] || {}
+    return { number: p.primaryNumber || "",
+             pos: p.primaryPosition ? p.primaryPosition.abbreviation : "" }
+  }
+
+  var m = cur && cur.matchup ? cur.matchup : {}
+  var bId = m.batter ? m.batter.id : 0, pId = m.pitcher ? m.pitcher.id : 0
+  var bBox = bId ? boxPlayer(bId) : null, pBox = pId ? boxPlayer(pId) : null
+  function st(bx, kind, which) {
+    return bx && bx[which] && bx[which][kind] ? bx[which][kind] : {}
+  }
+  var bToday = st(bBox, "batting", "stats"), bSeason = st(bBox, "batting", "seasonStats")
+  var pToday = st(pBox, "pitching", "stats"), pSeason = st(pBox, "pitching", "seasonStats")
+
+  var pitches = []
+  var evs = (cur && cur.playEvents) || []
+  for (var i = 0; i < evs.length && i < 30; i++) {
+    var e = evs[i]
+    if (!e.isPitch) continue
+    var d = e.details || {}, pd = e.pitchData || {}, c = pd.coordinates || {}, hd = e.hitData || null
+    pitches.push({
+      n: e.pitchNumber || pitches.length + 1,
+      type: d.type ? d.type.description || d.type.code : "",
+      code: d.type ? d.type.code || "" : "",
+      speed: typeof pd.startSpeed === "number" ? pd.startSpeed : null,
+      px: typeof c.pX === "number" ? c.pX : null,
+      pz: typeof c.pZ === "number" ? c.pZ : null,
+      szTop: typeof pd.strikeZoneTop === "number" ? pd.strikeZoneTop : 3.4,
+      szBot: typeof pd.strikeZoneBottom === "number" ? pd.strikeZoneBottom : 1.6,
+      call: d.call ? d.call.description || "" : d.description || "",
+      isStrike: d.isStrike === true, isBall: d.isBall === true, inPlay: d.isInPlay === true,
+      count: e.count ? e.count.balls + "-" + e.count.strikes : "",
+      ev: hd && typeof hd.launchSpeed === "number" ? hd.launchSpeed : null,
+      la: hd && typeof hd.launchAngle === "number" ? hd.launchAngle : null,
+      dist: hd && typeof hd.totalDistance === "number" ? hd.totalDistance : null
+    })
+  }
+
+  // Pitcher's mix in this game, and the batter's earlier plate appearances.
+  var mix = {}, mixTotal = 0, trips = []
+  for (i = 0; i < plays.length && i < 150; i++) {
+    var pl = plays[i]
+    var pm = pl.matchup || {}
+    if (pId && pm.pitcher && pm.pitcher.id === pId) {
+      var pe = pl.playEvents || []
+      for (var j = 0; j < pe.length && j < 30; j++) {
+        if (!pe[j].isPitch) continue
+        var dd = pe[j].details || {}, pp = pe[j].pitchData || {}
+        var t = dd.type ? dd.type.description || dd.type.code : "?"
+        if (!mix[t]) mix[t] = { type: t, code: dd.type ? dd.type.code || "" : "", n: 0, velo: 0, vn: 0, top: 0 }
+        mix[t].n++
+        mixTotal++
+        if (typeof pp.startSpeed === "number") {
+          mix[t].velo += pp.startSpeed; mix[t].vn++
+          if (pp.startSpeed > mix[t].top) mix[t].top = pp.startSpeed
+        }
+      }
+    }
+    if (bId && pm.batter && pm.batter.id === bId && pl !== cur && pl.about &&
+        pl.about.isComplete && pl.result && pl.result.event)
+      trips.push({ inning: pl.about.inning, isTop: pl.about.isTopInning === true,
+                   event: String(pl.result.event) })
+  }
+  var mixList = []
+  for (var k in mix) {
+    var x = mix[k]
+    mixList.push({ type: x.type, code: x.code, n: x.n,
+                   pct: mixTotal ? Math.round(x.n / mixTotal * 100) : 0,
+                   velo: x.vn ? Math.round(x.velo / x.vn * 10) / 10 : null,
+                   top: x.top ? Math.round(x.top * 10) / 10 : null })
+  }
+  mixList.sort(function(a, b) { return b.n - a.n })
+
+  function team(sideKey) {
+    var t = gd.teams && gd.teams[sideKey] ? gd.teams[sideKey] : {}
+    var ref = teamRef(t.id || 0, t.name || "")
+    var lt = ls.teams && ls.teams[sideKey] ? ls.teams[sideKey] : {}
+    return { id: ref.id, abbr: ref.abbr, color: ref.color,
+             r: typeof lt.runs === "number" ? lt.runs : 0,
+             h: typeof lt.hits === "number" ? lt.hits : 0,
+             e: typeof lt.errors === "number" ? lt.errors : 0 }
+  }
+  var count = cur && cur.count ? cur.count : {}
+  var done = cur && cur.about ? cur.about.isComplete === true : false
+  var ab = {
+    batter: { id: bId, name: m.batter ? m.batter.fullName : "", bats: m.batSide ? m.batSide.code : "",
+              number: bio(bId).number, pos: bio(bId).pos,
+              today: bToday.summary || "",
+              avg: bSeason.avg || "", obp: bSeason.obp || "", slg: bSeason.slg || "",
+              ops: bSeason.ops || "", hr: bSeason.homeRuns | 0, rbi: bSeason.rbi | 0,
+              trips: trips },
+    pitcher: { id: pId, name: m.pitcher ? m.pitcher.fullName : "", throws: m.pitchHand ? m.pitchHand.code : "",
+               number: bio(pId).number,
+               today: pToday.summary || "",
+               pitchCount: pToday.numberOfPitches | 0, strikes: pToday.strikes | 0,
+               era: pSeason.era || "", whip: pSeason.whip || "",
+               ip: pSeason.inningsPitched || "", so: pSeason.strikeOuts | 0,
+               wl: (pSeason.wins | 0) + "-" + (pSeason.losses | 0),
+               mix: mixList }
+  }
+  return {
+    gamePk: gd.game ? gd.game.pk : 0,
+    mode: (gd.status || {}).abstractGameState || "",
+    detail: (gd.status || {}).detailedState || "",
+    seasonLabel: gtype === "R" ? "SEASON" : (gtype === "S" ? "SPRING" : "POSTSEASON"),
+    away: team("away"), home: team("home"),
+    inning: typeof ls.currentInning === "number" ? ls.currentInning : null,
+    isTop: ls.isTopInning === true,
+    inningState: ls.inningState || "",
+    outs: typeof count.outs === "number" ? count.outs : (typeof ls.outs === "number" ? ls.outs : 0),
+    balls: typeof count.balls === "number" ? count.balls : 0,
+    strikes: typeof count.strikes === "number" ? count.strikes : 0,
+    on1: !!off.first, on2: !!off.second, on3: !!off.third,
+    atBatDone: done,
+    result: done && cur.result ? String(cur.result.description || "") : "",
+    pitches: pitches,
+    batter: ab.batter,
+    pitcher: ab.pitcher
+  }
+}
+
 // --- Live game feed ---------------------------------------------------------
 // One feed carries the count, the runners, the last play *and* the Statcast
 // tracking fields (hitData / pitchData) — the same numbers Baseball Savant
@@ -563,6 +1203,8 @@ function parseFeed(payload) {
     homeRHE: rhe("home"),
     awayProbable: pp.away ? pp.away.fullName : "",
     homeProbable: pp.home ? pp.home.fullName : "",
+    awayProbableId: pp.away ? pp.away.id || 0 : 0,
+    homeProbableId: pp.home ? pp.home.id || 0 : 0,
     awayRuns: ls.teams && ls.teams.away ? num(ls.teams.away.runs) : null,
     homeRuns: ls.teams && ls.teams.home ? num(ls.teams.home.runs) : null,
     batter: off.batter ? off.batter.fullName : "",
@@ -959,10 +1601,31 @@ var API = {
   compactDesc: compactDesc,
   pillDesc: pillDesc,
   buildSeries: buildSeries,
+  parseBroadcasts: parseBroadcasts,
+  stationQuery: stationQuery,
+  pickStream: pickStream,
   parsePostseason: parsePostseason,
   selectorGames: selectorGames,
+  switcherGames: switcherGames,
   detectFinalTransition: detectFinalTransition,
   buildBracketLayout: buildBracketLayout,
+  hasRealTeams: hasRealTeams,
+  roundName: roundName,
+  championPath: championPath,
+  parseAwardWinner: parseAwardWinner,
+  parseCsv: parseCsv,
+  firstLast: firstLast,
+  parsePercentiles: parsePercentiles,
+  percentileBars: percentileBars,
+  percentileColor: percentileColor,
+  savantLeaderboards: savantLeaderboards,
+  parseSavantGame: parseSavantGame,
+  pitchColor: pitchColor,
+  parseThemeColors: parseThemeColors,
+  themePitchColor: themePitchColor,
+  shortPitch: shortPitch,
+  PITCH_CODE_BY_NAME: PITCH_CODE_BY_NAME,
+  parseLive: parseLive,
   parseFeed: parseFeed,
   parseSeason: parseSeason,
   teamsByLeague: teamsByLeague,

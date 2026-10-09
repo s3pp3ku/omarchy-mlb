@@ -23,7 +23,7 @@ Panel {
   // Live clock tick so countdowns advance without refetching.
   property double nowMs: Date.now()
 
-  // Popup tab: bracket | games | statcast | season.
+  // Popup tab: live | bracket | games | statcast | odds | radio | season.
   property string view: "bracket"
   property bool viewPinned: false
 
@@ -31,11 +31,19 @@ Panel {
   property var schedule: ({ games: [], live: [], upcoming: [], today: [] })
   property var series: []
   property var bracketLayout: ({ cards: [], lines: [], width: 0, height: 0 })
+  // Season the bracket belongs to. Until this year's field is set, the tab
+  // shows last year's postseason (and its champion) instead of a blank page.
+  property int bracketSeason: 0
+  property int bracketReqYear: 0
+  property var champPath: null        // Mlb.championPath(series), once decided
+  property var wsMvp: null            // {name, teamAbbr, pos} or null
+  property int wsMvpSeason: 0
   property var seasons: ({})          // year -> parsed season calendar
   property var standings: null        // teamId -> standings row
   property int standingsYear: 0
   property bool standingsLoaded: false
   property var feed: null             // parsed focus-game feed (Statcast etc)
+  property var live: null             // Mlb.parseLive of the same feed (Live tab)
   property int feedPk: -1
   property bool loadingSchedule: false
   property bool loadingBracket: false
@@ -57,6 +65,19 @@ Panel {
   property var teamStatsRows: []    // sorted rows, one entry per team
   property var teamStatsById: ({})  // team id -> same row object
   property var leaders: []          // [{key, label, rows:[{rank,value,name,team}]}]
+
+  // ---- Baseball Savant (see mlb.js: CSV/JSON exports, no API key) ---------
+  property var savantBoards: []     // [{label, hint, rows:[{name,team,value}]}]
+  property double savantBoardsAt: 0
+  property var pctBatters: ({})     // MLBAM id -> {name, pct:{col: 0-100}}
+  property var pctPitchers: ({})
+  property double pctAt: 0
+  readonly property bool pctReady: Object.keys(pctPitchers).length > 0
+  property var savantGame: null     // Mlb.parseSavantGame for savantGamePk
+  property int savantGamePk: -1
+  property int savantReqPk: -1
+  // Season boards and percentiles move once a day at most.
+  readonly property int savantMaxAgeMs: 43200000
 
   // Monthly budget per source, spread evenly: oddsTtl = month / budget, so
   // budget 31 ≈ one pull a day, budget 60 ≈ one every 12h. The helper stops
@@ -80,6 +101,102 @@ Panel {
     return v === true || v === "true" || v === 1
   }
   readonly property bool teamColorsOn: boolSetting("teamColors", true)
+
+  // ---- Color schemes -------------------------------------------------------
+  //  theme   — everything follows the active Omarchy theme: highlights use
+  //            its accent; live / ball / strike / in-play, pitch-type dots and
+  //            percentile sliders use its named palette (colors.toml).
+  //  mlb     — MLB's red, white and navy: red highlights, navy-washed cards,
+  //            navy → white → red sliders.
+  //  classic — the Omarchy accent with MLB Gameday / Baseball Savant status
+  //            colors.
+  // Picked with the chip in the popup header (saved to a small prefs file so
+  // it works on any bar, including extra-bars) or the widget setting.
+  readonly property var schemes: [
+    { value: "theme", label: "Omarchy" },
+    { value: "mlb", label: "MLB" },
+    { value: "classic", label: "Classic" }
+  ]
+  property string schemePref: ""      // from prefs.json; wins over the setting
+  readonly property string scheme: {
+    var v = schemePref || String(setting("colorScheme", "theme"))
+    return v === "mlb" || v === "classic" ? v : "theme"
+  }
+  readonly property bool classicColors: scheme === "classic"
+  readonly property bool mlbColors: scheme === "mlb"
+  readonly property string schemeLabel: scheme === "mlb" ? "MLB" : scheme === "classic" ? "Classic" : "Omarchy"
+
+  // MLB logo colors, lifted a little so they read on dark popups.
+  readonly property color mlbRed: "#E0173F"
+  readonly property color mlbBlue: "#3D7BD9"
+  readonly property color mlbNavy: "#1F4A8F"
+  readonly property color mlbSilver: "#C8D1DC"
+
+  readonly property color hi: mlbColors ? mlbRed : Color.accent
+  // Card / border / hover wash: neutral (theme text color at alpha, which
+  // works on light and dark themes) or MLB navy.
+  function wash(a) {
+    // A floor keeps even the faintest row fills visibly navy; borders and
+    // hovers (higher a) go near-solid.
+    if (mlbColors) return Qt.rgba(mlbNavy.r, mlbNavy.g, mlbNavy.b, Math.min(0.95, 0.14 + a * 6))
+    return Util.alpha(Color.popups.text, a)
+  }
+
+  readonly property string prefsPath: (Quickshell.env("HOME") || "") + "/.local/state/omarchy-mlb-prefs.json"
+  FileView {
+    id: prefsFile
+    path: root.prefsPath
+    printErrors: false
+    onLoaded: {
+      try {
+        var p = JSON.parse(text() || "{}")
+        root.schemePref = typeof p.colorScheme === "string" ? p.colorScheme.slice(0, 16) : ""
+      } catch (e) { root.schemePref = "" }
+    }
+  }
+  function setScheme(v) {
+    if (v !== "theme" && v !== "mlb" && v !== "classic") return
+    schemePref = v
+    prefsFile.setText(JSON.stringify({ colorScheme: v }) + "\n")
+  }
+  function cycleScheme() {
+    for (var i = 0; i < schemes.length; i++)
+      if (schemes[i].value === scheme) { setScheme(schemes[(i + 1) % schemes.length].value); return }
+    setScheme("theme")
+  }
+
+  property var themePal: ({})
+  FileView {
+    id: themeFile
+    path: (Quickshell.env("HOME") || "") + "/.local/state/omarchy/current/theme/colors.toml"
+    watchChanges: true
+    printErrors: false
+    onLoaded: root.themePal = Mlb.parseThemeColors(text())
+    onFileChanged: reload()
+  }
+  // A theme switch swaps the `current/theme` symlink and pushes new colors to
+  // the shell's Color singleton; follow it rather than trusting the watcher.
+  Connections {
+    target: Color
+    function onAccentChanged() { themeFile.reload() }
+    function onBackgroundChanged() { themeFile.reload() }
+  }
+  function themeColor(key, classic) {
+    return scheme === "theme" && themePal[key] ? themePal[key] : classic
+  }
+  readonly property color cLive: mlbColors ? mlbRed : themeColor("red", "#E5534B")
+  readonly property color cStrike: mlbColors ? mlbRed : themeColor("red", "#E5534B")
+  readonly property color cBall: mlbColors ? mlbSilver : themeColor("green", "#3FB950")
+  readonly property color cPlay: mlbColors ? mlbBlue : themeColor("blue", "#4C8DFF")
+  readonly property color cGood: mlbColors ? mlbBlue : themeColor("green", "#7EE787")
+  function pitchColor(code) {
+    return scheme === "theme" ? Mlb.themePitchColor(code, themePal) : Mlb.pitchColor(code)
+  }
+  function pctColor(p) {
+    if (mlbColors) return Mlb.percentileColor(p, "#1F4FA3", "#D7DEE8", String(mlbRed))
+    if (classicColors) return Mlb.percentileColor(p)
+    return Mlb.percentileColor(p, themePal.blue, String(Color.muted), themePal.red)
+  }
   readonly property bool notifyOn: boolSetting("notifyFavorite", false)
 
   function openFromHotkey() { open() }
@@ -90,11 +207,15 @@ Panel {
   // has no Content-Length for curl to check.
   readonly property int maxFeedBytes: 5242880
   readonly property int maxPlainBytes: 1048576
+  // A two-week regular-season window with broadcasts is ~1.6 MB of JSON
+  // (~150 KB gzipped); without headroom a busy stretch would silently fail.
+  readonly property int maxScheduleBytes: 4194304
 
   function fetchArgs(seconds, url, cap) {
     // -q must come first: without it curl reads ~/.curlrc, which could add a
     // proxy, an output file, or --insecure to an otherwise fixed request.
-    return ["curl", "-q", "-fsS", "-A", ua,
+    // --compressed: the live feed is ~960 KB as JSON but ~160 KB gzipped.
+    return ["curl", "-q", "-fsS", "--compressed", "-A", ua,
             "--proto", "=https",
             "--max-time", String(seconds),
             "--max-filesize", String(cap || maxPlainBytes),
@@ -148,7 +269,7 @@ Panel {
     if (host.indexOf("@") >= 0) return
     if (host.indexOf(":") >= 0) host = host.slice(0, host.indexOf(":"))
     if (host !== "www.mlb.com" && host !== "mlb.com" &&
-        host !== "baseballsavant.mlb.com") return
+        host !== "baseballsavant.mlb.com" && host !== "tunein.com") return
     if (raw.length > 400) return
     Qt.openUrlExternally(raw)
   }
@@ -158,6 +279,137 @@ Panel {
     if (!isFinite(n) || n <= 0) return ""
     return "https://www.mlb.com/gameday/" + n
   }
+  // Free station streams: TuneIn's search for the station's call letters
+  // (MLB's data names stations but carries no stream URLs).
+  function radioUrl(query) {
+    var q = String(query || "").replace(/[^A-Za-z0-9 .&'-]/g, "").trim().slice(0, 60)
+    return q ? "https://tunein.com/search/?query=" + encodeURIComponent(q) : ""
+  }
+  // MLB's own player for the game (audio needs a free MLB account in-app).
+  function mlbAudioUrl(pk) {
+    var n = parseInt(pk, 10)
+    if (!isFinite(n) || n <= 0) return ""
+    return "https://www.mlb.com/tv/g" + n
+  }
+  // ---- In-widget radio ---------------------------------------------------
+  // Station chips resolve through Radio Browser (radio-browser.info: free,
+  // open, no key) to a direct stream, played by mpv in the background so it
+  // keeps going with the popup closed. Lookups happen on press only and are
+  // cached; a station Radio Browser doesn't list falls back to TuneIn.
+  property var streamCache: ({})      // query -> Mlb.pickStream result | false
+  property string radioResolving: ""  // query being looked up
+  property var radioPending: null     // {st, label, gamePk} waiting on lookup
+  property var radioNow: null         // {query, label, gamePk, stream}
+  property var radioQueued: null      // next start while the old mpv exits
+  property bool radioStopping: false
+  property string radioNote: ""
+  property int radioVolume: 80
+  readonly property bool radioPlaying: playerProc.running
+  readonly property string radioSock: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") +
+                                      "/omarchy-mlb-radio.sock"
+
+  function radioLabel(st) {
+    return (st.abbr ? st.abbr + " " : "") + st.name
+  }
+
+  // Press on a station chip: stop if it's the one playing, else look it up
+  // (or use the cache) and play.
+  function toggleStation(st, gamePk) {
+    if (!st || !st.query) return
+    if (radioNow && radioNow.query === st.query && (radioPlaying || radioQueued)) {
+      stopRadio()
+      return
+    }
+    radioNote = ""
+    var hit = streamCache[st.query]
+    if (hit === false) { radioFallback(st); return }
+    if (hit) { startStream(hit, st, gamePk); return }
+    radioPending = { st: st, gamePk: gamePk }
+    radioResolving = st.query
+    // Only letters, digits, space, dot, ampersand, hyphen reach the URL, and
+    // encodeURIComponent leaves none of them able to break the quoting.
+    var q = encodeURIComponent(String(st.query).replace(/[^A-Za-z0-9 .&-]/g, "").slice(0, 60))
+    var path = "/json/stations/search?name=" + q +
+               "&limit=40&hidebroken=true&order=clickcount&reverse=true"
+    // Radio Browser runs several mirrors; try the next if one is down.
+    var hosts = ["de1", "nl1", "at1"], parts = []
+    for (var i = 0; i < hosts.length; i++)
+      parts.push("curl -q -fsS --compressed -A '" + ua + "' --proto '=https' --max-time 8" +
+                 " --max-filesize " + maxPlainBytes +
+                 " 'https://" + hosts[i] + ".api.radio-browser.info" + path + "'")
+    launch(16, ["/bin/bash", "-c", parts.join(" || ")])
+  }
+
+  function radioFallback(st) {
+    radioNote = st.name + " isn't in Radio Browser — opened it on TuneIn instead"
+    openLink(radioUrl(st.query))
+  }
+
+  function startStream(stream, st, gamePk) {
+    var item = { query: st.query, label: radioLabel(st), gamePk: gamePk || 0, stream: stream }
+    if (playerProc.running) {
+      // Swap stations: let the old mpv exit, then start the new one.
+      radioQueued = item
+      radioStopping = true
+      playerProc.running = false
+      radioNow = item
+      return
+    }
+    launchPlayer(item)
+  }
+
+  function launchPlayer(item) {
+    var url = String(item.stream.url || "")
+    if (!/^https?:\/\/[^\s"'<>]+$/.test(url)) { radioNote = "That stream address looks wrong"; return }
+    radioNow = item
+    radioQueued = null
+    // "--" ends option parsing, so a URL can never be read as an mpv flag;
+    // --ytdl=no keeps mpv from handing the URL to yt-dlp.
+    playerProc.command = ["mpv", "--no-video", "--ytdl=no", "--no-terminal", "--force-window=no",
+                          "--audio-display=no", "--volume=" + radioVolume,
+                          "--input-ipc-server=" + radioSock, "--title=omarchy-mlb-radio",
+                          "--", url]
+    playerProc.running = true
+    // Radio Browser asks clients to report plays (it ranks stations by them).
+    var uuid = String(item.stream.uuid || "")
+    if (/^[0-9a-f-]{36}$/.test(uuid)) {
+      clickProc.command = ["curl", "-q", "-fsS", "-o", "/dev/null", "-A", ua, "--proto", "=https",
+                           "--max-time", "8", "https://de1.api.radio-browser.info/json/url/" + uuid]
+      clickProc.running = true
+    }
+  }
+
+  function stopRadio() {
+    radioQueued = null
+    radioPending = null
+    radioResolving = ""
+    if (playerProc.running) { radioStopping = true; playerProc.running = false }
+    radioNow = null
+  }
+
+  function setRadioVolume(v) {
+    radioVolume = Math.max(0, Math.min(130, Math.round(v)))
+    if (!playerProc.running) return
+    // mpv's JSON IPC; python3 is already a dependency (odds.py).
+    volProc.command = ["/usr/bin/python3", "-I", "-c",
+      "import socket,sys\n" +
+      "s=socket.socket(socket.AF_UNIX)\ns.settimeout(2)\ns.connect(sys.argv[1])\n" +
+      "s.sendall(('{\"command\":[\"set_property\",\"volume\",'+sys.argv[2]+']}\\n').encode())\ns.close()",
+      radioSock, String(radioVolume)]
+    volProc.running = true
+  }
+
+  // Default station for a game: your team's radio call if they're playing,
+  // else the home club's, else the first English feed.
+  function defaultStation(g) {
+    var st = g && g.media ? g.media.stations : []
+    var want = favTeam && (g.away.abbr === favTeam || g.home.abbr === favTeam) ? favTeam : g ? g.home.abbr : ""
+    for (var i = 0; i < st.length; i++)
+      if (st[i].lang === "en" && !st[i].national && st[i].abbr === want) return st[i]
+    for (i = 0; i < st.length; i++) if (st[i].lang === "en") return st[i]
+    return null
+  }
+
   function savantUrl(pk) {
     var n = parseInt(pk, 10)
     if (!isFinite(n) || n <= 0) return ""
@@ -169,15 +421,18 @@ Panel {
   // completion whose generation no longer matches is discarded; a request
   // arriving while its slot is busy is queued, never raced.
   property int fetchGen: 0
-  property var procGen: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-  property var pendingCmd: [null, null, null, null, null, null, null, null, null, null, null, null]
-  property var guardStarted: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  property var procGen: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  property var pendingCmd: [null, null, null, null, null, null, null, null,
+                            null, null, null, null, null, null, null, null, null]
+  property var guardStarted: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 
   readonly property var guardedProcs: [schedProc, bracketProc, seasonProc,
                                        season2Proc, standProc, feedProc,
                                        espnProc, polyProc, kalshiProc, probProc,
-                                       teamStatsProc, leadersProc]
-  readonly property var guardLimits: [12, 12, 10, 10, 14, 20, 18, 18, 18, 20, 20, 16]
+                                       teamStatsProc, leadersProc, mvpProc,
+                                       savantBoardsProc, pctProc, savantGameProc, stationProc]
+  readonly property var guardLimits: [12, 12, 10, 10, 14, 20, 18, 18, 18, 20, 20, 16, 10,
+                                      60, 30, 25, 30]
 
   function launch(i, cmd) {
     var pc = pendingCmd
@@ -265,7 +520,8 @@ Panel {
     var end = new Date(now.getTime() + 7 * 86400000)
     loadingSchedule = true
     launch(0, fetchArgs(12, base + "schedule?sportId=1&startDate=" + ymd(start) +
-      "&endDate=" + ymd(end) + "&hydrate=linescore,decisions"))
+      "&endDate=" + ymd(end) + "&hydrate=linescore,decisions,broadcasts(all)",
+      maxScheduleBytes))
   }
 
   property real lastBracketFetch: 0
@@ -275,11 +531,19 @@ Panel {
     if (Date.now() - lastBracketFetch >= (maxAgeMs || 30000)) fetchBracket()
   }
 
-  function fetchBracket() {
+  // Always asks for this year first; the collector falls back to last year
+  // when this year's bracket is still all placeholders (or not posted yet).
+  function fetchBracket(year) {
+    var y = year || new Date().getFullYear()
     lastBracketFetch = Date.now()
     loadingBracket = true
-    launch(1, fetchArgs(12, base + "schedule/postseason?sportId=1&season=" +
-      new Date().getFullYear()))
+    bracketReqYear = y
+    launch(1, fetchArgs(12, base + "schedule/postseason?sportId=1&season=" + y +
+      "&hydrate=decisions"))
+  }
+
+  function fetchMvp(year) {
+    launch(12, fetchArgs(10, base + "awards/WSMVP/recipients?season=" + year))
   }
 
   function fetchSeasons() {
@@ -370,12 +634,12 @@ Panel {
   }
 
   function fetchPolyOdds() {
-    launch(7, oddsArgs("poly-ws-" + thisYear, "poly",
-      "https://gamma-api.polymarket.com/events?slug=mlb-world-series-champion-" + thisYear))
+    launch(7, oddsArgs("poly-ws-" + marketYear, "poly",
+      "https://gamma-api.polymarket.com/events?slug=mlb-world-series-champion-" + marketYear))
   }
 
   function fetchKalshiOdds() {
-    var yy = String(thisYear).slice(2)
+    var yy = String(marketYear).slice(2)
     launch(8, oddsArgs("kalshi-ws-" + yy, "kalshi",
       "https://external-api.kalshi.com/trade-api/v2/markets?event_ticker=KXMLB-" +
       yy + "&limit=40"))
@@ -428,6 +692,17 @@ Panel {
     // feedPk against focusGame, so stale data never renders anyway).
   }
 
+  // Live tab ←/→: move the pin along the matchup switcher, wrapping around.
+  function stepGame(dir) {
+    var list = Mlb.switcherGames(schedule.games, 15)
+    if (list.length < 2) return
+    var at = -1
+    for (var i = 0; i < list.length; i++)
+      if (focusGame && list[i].gamePk === focusGame.gamePk) at = i
+    var next = at < 0 ? 0 : (at + dir + list.length) % list.length
+    focusGameFor(list[next].gamePk)
+  }
+
   function ensureStandings() {
     if (standingsLoaded && standingsYear === standingsYearFor(nowMs)) return
     if (standProc.running) return
@@ -443,19 +718,76 @@ Panel {
   // Team season stats come as two stats-api calls (hitting, pitching) on a
   // single Process; the delimiter line splits them for parsing.
   function fetchTeamStats() {
-    var y = thisYear
+    var y = statsYear
     var h = base + "teams/stats?season=" + y + "&group=hitting&sportId=1"
     var p = base + "teams/stats?season=" + y + "&group=pitching&sportId=1"
-    var script = "curl -q -fsS -A \"omarchy-mlb/0.1\" --proto \"=https\" --max-time 15 --max-filesize " + maxPlainBytes +
-                 " \"" + h + "\"; echo ----SPLIT----; curl -q -fsS -A \"omarchy-mlb/0.1\" --proto \"=https\" --max-time 15 --max-filesize " + maxPlainBytes +
-                 " \"" + p + "\""
-    launch(10, ["/bin/bash", "-c", script])
+    launch(10, ["/bin/bash", "-c", multiCurl([h, p], 15)])
+  }
+
+  // Several fixed URLs on one Process, separated by ----SPLIT---- lines.
+  // URLs are built here from constants and integers only, never from
+  // remote data, so single-quoting them for bash is sufficient.
+  function multiCurl(urls, seconds) {
+    var parts = []
+    for (var i = 0; i < urls.length; i++)
+      parts.push("curl -q -fsS --compressed -A '" + ua + "' --proto '=https' --max-time " +
+                 seconds + " --max-filesize " + maxPlainBytes + " '" + urls[i] + "'")
+    return parts.join("; echo; echo ----SPLIT----; ")
+  }
+
+  readonly property string savantBase: "https://baseballsavant.mlb.com/leaderboard/"
+
+  function fetchSavantBoards() {
+    var y = statsYear
+    savantBoardsAt = Date.now()
+    launch(13, ["/bin/bash", "-c", multiCurl([
+      savantBase + "expected_statistics?type=batter&year=" + y + "&position=&team=&min=q&csv=true",
+      savantBase + "statcast?type=batter&year=" + y + "&position=&team=&min=q&csv=true",
+      savantBase + "bat-tracking?type=batter&minSwings=q&gameType=Regular&dateStart=" + y +
+        "-01-01&dateEnd=" + y + "-12-31&csv=true",
+      savantBase + "sprint_speed?year=" + y + "&position=&team=&min=10&csv=true",
+      savantBase + "outs_above_average?type=Fielder&startYear=" + y + "&endYear=" + y +
+        "&split=no&team=&range=year&min=q&pos=&roles=&viz=hide&csv=true"
+    ], 20)])
+  }
+
+  function fetchPercentiles() {
+    var y = statsYear
+    pctAt = Date.now()
+    launch(14, ["/bin/bash", "-c", multiCurl([
+      savantBase + "percentile-rankings?type=batter&year=" + y + "&csv=true",
+      savantBase + "percentile-rankings?type=pitcher&year=" + y + "&csv=true"
+    ], 15)])
+  }
+
+  function ensureSavant() {
+    var now = Date.now()
+    if (now - savantBoardsAt > savantMaxAgeMs && !savantBoardsProc.running) fetchSavantBoards()
+    if (now - pctAt > savantMaxAgeMs && !pctProc.running) fetchPercentiles()
+  }
+
+  // Savant's Gamefeed: ~3 MB of JSON (~175 KB gzipped). Pulled for the
+  // focus game when the Statcast tab shows it, once a minute while live.
+  readonly property int maxSavantGameBytes: 10485760
+  function fetchSavantGame() {
+    var g = focusGame
+    if (!g || g.mode === "preview") return
+    savantReqPk = g.gamePk
+    launch(15, fetchArgs(20, "https://baseballsavant.mlb.com/gf?game_pk=" + g.gamePk,
+                         maxSavantGameBytes))
+  }
+
+  function ensureSavantGame() {
+    var g = focusGame
+    if (!g || g.mode === "preview") return
+    if (savantGamePk !== g.gamePk && !(savantGameProc.running && savantReqPk === g.gamePk))
+      fetchSavantGame()
   }
 
   function fetchLeaders() {
     launch(11, fetchArgs(12,
       base + "stats/leaders?leaderCategories=" + Mlb.LEADER_ORDER.join(",") +
-      "&season=" + thisYear + "&sportId=1&limit=5"))
+      "&season=" + statsYear + "&sportId=1&limit=5"))
   }
 
   function refresh() {
@@ -468,6 +800,9 @@ Panel {
     fetchOdds()
     fetchTeamStats()
     fetchLeaders()
+    fetchSavantBoards()
+    fetchPercentiles()
+    if (view === "statcast") fetchSavantGame()
   }
 
   Component.onCompleted: {
@@ -491,12 +826,16 @@ Panel {
     onTriggered: root.fetchSchedule()
   }
   // The bracket carries series scores, so it follows the games: every minute
-  // while something is live, every five minutes otherwise (a series wraps,
-  // the next round gains teams). Opening the panel, the Bracket tab, and a
-  // game ending also refresh it (see onOpenedChanged / onViewChanged /
-  // schedProc).
+  // while something is live, every five minutes while the postseason is
+  // running (a series wraps, the next round gains teams), and every six
+  // hours once it's settled — a finished bracket only changes when the next
+  // year's field is set. Opening the panel, the Bracket tab, and a game
+  // ending also refresh it (see onOpenedChanged / onViewChanged / schedProc).
+  readonly property bool bracketSettled: series.length > 0 &&
+    (champPath !== null || bracketSeason < thisYear)
   Timer {
-    interval: root.schedule.live.length > 0 ? 60000 : 300000
+    interval: root.schedule.live.length > 0 ? 60000
+            : root.bracketSettled ? 21600000 : 300000
     repeat: true
     running: true
     onTriggered: root.fetchBracket()
@@ -514,12 +853,24 @@ Panel {
     }
   }
   Timer { interval: 21600000; repeat: true; onTriggered: root.fetchSeasons() }
-  // Statcast only while the popup is showing it and the game is running.
+  // The live feed only while the popup is showing it and the game is
+  // running: every 10 s on the Live tab (the API's own cache window, so
+  // faster gains nothing), every 20 s on Games/Statcast.
   Timer {
-    interval: 20000
+    interval: root.view === "live" ? 10000 : 20000
     repeat: true
-    running: root.opened && root.feedLive && (root.view === "games" || root.view === "statcast")
+    running: root.opened && root.feedLive &&
+             (root.view === "live" || root.view === "games" || root.view === "statcast")
     onTriggered: root.fetchFeed()
+  }
+  // Savant's game feed refreshes slower than MLB's and is bigger: once a
+  // minute, Statcast tab only.
+  Timer {
+    interval: 60000
+    repeat: true
+    running: root.opened && root.view === "statcast" && root.focusGame !== null &&
+             root.focusGame.mode === "live"
+    onTriggered: root.fetchSavantGame()
   }
   // One-second countdown tick + notification check.
   Timer {
@@ -540,7 +891,7 @@ Panel {
         if (!root.fresh(0)) return
         root.loadingSchedule = false
         try {
-          var parsed = root.parseBounded(text, root.maxPlainBytes)
+          var parsed = root.parseBounded(text, root.maxScheduleBytes)
           if (!parsed) return
           var next = Mlb.parseSchedule(parsed)
           // Capture the live→final flip against the still-current schedule
@@ -572,8 +923,19 @@ Panel {
           var parsed = root.parseBounded(text, root.maxPlainBytes)
           if (!parsed) return
           var arr = Mlb.parsePostseason(parsed)
+          var year = root.bracketReqYear
+          // This year's field isn't set yet: show last year's bracket (and
+          // champion) rather than a page of TBDs. One step back only.
+          if (!Mlb.hasRealTeams(arr) && year === new Date().getFullYear()) {
+            root.fetchBracket(year - 1)
+            return
+          }
           root.series = arr
+          root.bracketSeason = year
           root.bracketLayout = Mlb.buildBracketLayout(arr)
+          root.champPath = Mlb.championPath(arr)
+          if (root.champPath && (root.wsMvp === null || root.wsMvpSeason !== year))
+            root.fetchMvp(year)
           root.lastError = ""
         } catch (e) { root.lastError = "bracket parse error" }
       }
@@ -656,6 +1018,7 @@ Panel {
           var parsed = root.parseBounded(text, root.maxFeedBytes)
           if (!parsed) return
           root.feed = Mlb.parseFeed(parsed)
+          root.live = Mlb.parseLive(parsed)
           root.feedPk = root.requestedPk
         } catch (e) { root.lastError = "feed parse error" }
       }
@@ -790,6 +1153,132 @@ Panel {
     }
   }
 
+  Process {
+    id: mvpProc
+    command: ["true"]
+    onExited: root.startPending(12)
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        if (!root.fresh(12)) return
+        try {
+          var parsed = root.parseBounded(text, 65536)
+          var w = parsed ? Mlb.parseAwardWinner(parsed) : null
+          if (w) { root.wsMvp = w; root.wsMvpSeason = root.bracketSeason }
+        } catch (e) { /* not announced yet; the next bracket poll retries */ }
+      }
+    }
+  }
+
+  Process {
+    id: savantBoardsProc
+    command: ["true"]
+    onExited: root.startPending(13)
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        if (!root.fresh(13)) return
+        try {
+          var parts = String(text || "").split("----SPLIT----")
+          if (text.length > 6 * root.maxPlainBytes) return
+          var boards = Mlb.savantLeaderboards({
+            xstats: parts[0] || "", statcast: parts[1] || "", bat: parts[2] || "",
+            sprint: parts[3] || "", oaa: parts[4] || "" })
+          if (boards.length) root.savantBoards = boards
+          else root.savantBoardsAt = 0
+        } catch (e) { root.savantBoardsAt = 0 }
+      }
+    }
+  }
+
+  Process {
+    id: pctProc
+    command: ["true"]
+    onExited: root.startPending(14)
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        if (!root.fresh(14)) return
+        try {
+          if (text.length > 3 * root.maxPlainBytes) return
+          var parts = String(text || "").split("----SPLIT----")
+          var b = Mlb.parsePercentiles(parts[0] || "")
+          var p = Mlb.parsePercentiles(parts[1] || "")
+          if (Object.keys(b).length) root.pctBatters = b
+          if (Object.keys(p).length) root.pctPitchers = p
+          if (!Object.keys(b).length && !Object.keys(p).length) root.pctAt = 0
+        } catch (e) { root.pctAt = 0 }
+      }
+    }
+  }
+
+  Process {
+    id: savantGameProc
+    command: ["true"]
+    onExited: root.startPending(15)
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        if (!root.fresh(15)) return
+        try {
+          var parsed = root.parseBounded(text, root.maxSavantGameBytes)
+          if (!parsed) return
+          var g = root.gameByPk(root.savantReqPk)
+          root.savantGame = Mlb.parseSavantGame(parsed, g ? g.away.id : 0, g ? g.home.id : 0)
+          root.savantGamePk = root.savantReqPk
+        } catch (e) { /* keep last-good */ }
+      }
+    }
+  }
+
+  Process {
+    id: stationProc
+    command: ["true"]
+    onExited: root.startPending(16)
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        if (!root.fresh(16)) return
+        var pend = root.radioPending
+        var q = root.radioResolving
+        root.radioResolving = ""
+        root.radioPending = null
+        if (!pend || pend.st.query !== q) return
+        var pick = null
+        try {
+          var parsed = root.parseBounded(text, root.maxPlainBytes)
+          pick = parsed ? Mlb.pickStream(parsed, q) : null
+        } catch (e) { pick = null }
+        if (text.length === 0) { root.radioNote = "Couldn't reach Radio Browser"; return }
+        var c = {}
+        for (var k in root.streamCache) c[k] = root.streamCache[k]
+        c[q] = pick || false
+        root.streamCache = c
+        if (pick) root.startStream(pick, pend.st, pend.gamePk)
+        else root.radioFallback(pend.st)
+      }
+    }
+  }
+
+  Process {
+    id: playerProc
+    command: ["true"]
+    onExited: function(code) {
+      if (root.radioStopping) {
+        root.radioStopping = false
+        if (root.radioQueued) root.launchPlayer(root.radioQueued)
+        return
+      }
+      // Ended on its own: stream dropped or never connected.
+      if (root.radioNow) {
+        root.radioNote = root.radioNow.label + " stopped" + (code ? " (stream unavailable)" : "")
+        root.radioNow = null
+      }
+    }
+  }
+  Process { id: clickProc; command: ["true"] }
+  Process { id: volProc; command: ["true"] }
+
   Process { id: notifyProc; command: ["true"] }
 
   // ---- Derived values ----------------------------------------------------
@@ -826,9 +1315,16 @@ Panel {
   // from triggering a redundant fetch.
   onFocusGameChanged: {
     if (opened && focusGame && feedPk !== focusGame.gamePk) fetchFeed()
+    if (opened && view === "statcast") ensureSavantGame()
   }
   readonly property bool feedLive: feed !== null && feed.mode === "Live"
   readonly property int thisYear: new Date(nowMs).getFullYear()
+  // Season whose stats are worth showing: last year's until spring training.
+  readonly property int statsYear: standingsYearFor(nowMs)
+  // Championship markets: once this year's title is decided, next year's
+  // futures are the only live ones.
+  readonly property int marketYear: champPath !== null && bracketSeason === thisYear
+                                    ? thisYear + 1 : thisYear
 
   function seasonCal(year) { return seasons[year] || null }
 
@@ -877,21 +1373,15 @@ Panel {
     return m.length ? m[0] : null
   }
 
-  // The World Series winner, once decided.
+  // The World Series winner of the bracket season, once decided.
   function champion() {
-    for (var i = 0; i < series.length; i++) {
-      var s = series[i]
-      if (s.round === "WS" && s.clinched !== null) {
-        for (var j = 0; j < s.games.length; j++) {
-          var g = s.games[j]
-          if (g.away.id === s.clinched) return { name: g.away.name, abbr: g.away.abbr }
-          if (g.home.id === s.clinched) return { name: g.home.name, abbr: g.home.abbr }
-        }
-        return { name: "", abbr: "" }
-      }
-    }
-    return null
+    return champPath ? { name: champPath.team.name, abbr: champPath.team.abbr,
+                         year: bracketSeason } : null
   }
+
+  // The bar pill celebrates for a week after the final out.
+  readonly property bool champFresh: champPath !== null && champPath.clinchMs > 0 &&
+                                     nowMs - champPath.clinchMs < 7 * 86400000
 
   // ---- Favorite team -----------------------------------------------------
   // One league's clubs for the Season tab's picker (15 chips), sorted by
@@ -977,16 +1467,19 @@ Panel {
       }
       return glyph + " " + game.away.abbr + "-" + game.home.abbr + " " + fmtWhen(game.startMs)
     }
+    if (champFresh) return trophy + " " + champPath.team.abbr + " CHAMPS"
     var m = nextMilestone()
     if (m) return glyph + " " + m.short + " " + fmtShort(m.ms - nowMs)
     return glyph + " MLB"
   }
 
-  readonly property string label: safeBare(rawLabel, 36)
+  // A speaker on the pill while the radio is on.
+  readonly property string label: safeBare(rawLabel, 36) + (radioPlaying ? " \uF028" : "")
 
   // The tooltip renders in Text elements the shell owns, so the markup
   // boundary goes on the finished string.
-  readonly property string tooltip: safeBareLines(rawTooltip, 84, 6)
+  readonly property string tooltip: safeBareLines(
+    (radioPlaying && radioNow ? "Listening: " + radioNow.label + "\n" : "") + rawTooltip, 84, 7)
 
   readonly property string rawTooltip: {
     var lines = []
@@ -1005,6 +1498,8 @@ Panel {
       lines.push(game.away.name + " @ " + game.home.name)
       lines.push(dayWord(game.startMs) + " " + fmtTime(game.startMs) + " · " +
                  safe(game.venue, 40))
+      if (game.media && game.media.tv.length && game.mode !== "final")
+        lines.push("TV: " + safe(game.media.tv.slice(0, 3).join(", "), 70))
       lines.push(Mlb.compactDesc(game.desc))
       if (game.mode === "final") {
         lines.push((game.winnerName ? "W " + game.winnerName : "") +
@@ -1018,7 +1513,9 @@ Panel {
       lines.push(m.label + " · " + Qt.formatDateTime(new Date(m.ms), "d MMM yyyy") +
                  " · " + fmtLong(m.ms - nowMs))
     var champ = champion()
-    if (champ) lines.push("World Series champions: " + champ.name)
+    if (champ) lines.push(champ.year + " World Series champions: " + champ.name +
+                          " (" + champPath.wsWon + "-" + champPath.wsLost + " over " +
+                          champPath.opp.abbr + ")")
     return lines.join("\n")
   }
 
@@ -1048,7 +1545,9 @@ Panel {
   onViewChanged: {
     if (view === "bracket") refreshBracketIfStale(30000)
     if (view === "season") ensureStandings()
-    if (view === "games" || view === "statcast") ensureFeed(false)
+    if (view === "games" || view === "statcast" || view === "live") ensureFeed(false)
+    if (view === "statcast") { ensureSavant(); ensureSavantGame() }
+    if (view === "live") ensureSavant()
   }
 
   onOpenedChanged: {
@@ -1063,6 +1562,8 @@ Panel {
       if (view === "season") ensureStandings()
       if (teamStatsRows.length === 0) fetchTeamStats()
       if (leaders.length === 0) fetchLeaders()
+      if (view === "statcast" || view === "live") ensureSavant()
+      if (view === "statcast") ensureSavantGame()
     }
   }
 
@@ -1072,8 +1573,8 @@ Panel {
   onSettingsChanged: {
     if (viewPinned || !settings) return
     var t = String(setting("defaultTab", "bracket"))
-    if (t === "games" || t === "statcast" || t === "season" ||
-        t === "odds" || t === "bracket") view = t
+    if (t === "live" || t === "games" || t === "statcast" || t === "season" ||
+        t === "odds" || t === "radio" || t === "bracket") view = t
   }
 
   // ---- Popup -------------------------------------------------------------
@@ -1097,8 +1598,10 @@ Panel {
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(t) { if (t === "r") root.refresh() }
-      // Arrow keys scroll the panel body when a tab overflows the card.
+      // Arrow keys scroll the panel body when a tab overflows the card; on
+      // the Live tab, left/right step through today's matchups.
       onMoveRequested: function(dx, dy) {
+        if (dx !== 0 && root.view === "live") { root.stepGame(dx); return }
         scroller.contentY = Math.max(0, Math.min(
           scroller.contentHeight - scroller.height,
           scroller.contentY - dy * Style.space(56)))
@@ -1129,7 +1632,7 @@ Panel {
             Text {
               textFormat: Text.PlainText
               text: root.glyph
-              color: Color.accent
+              color: root.hi
               font.family: Style.font.family
               font.pixelSize: Style.space(14)
               anchors.verticalCenter: parent.verticalCenter
@@ -1149,6 +1652,52 @@ Panel {
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
             spacing: Style.space(6)
+            // Color-scheme switcher: click cycles Omarchy → MLB → Classic.
+            Rectangle {
+              id: schemeChip
+              anchors.verticalCenter: parent.verticalCenter
+              width: schemeRow.implicitWidth + Style.space(14)
+              height: Style.space(20)
+              radius: Style.space(10)
+              color: schemeMouse.containsMouse ? root.wash(0.12) : root.wash(0.05)
+              border.width: 1
+              border.color: schemeMouse.containsMouse ? root.hi : root.wash(0.16)
+              Row {
+                id: schemeRow
+                anchors.centerIn: parent
+                spacing: Style.space(4)
+                // Three swatches previewing the active scheme.
+                Repeater {
+                  model: root.mlbColors ? [root.mlbNavy, "#FFFFFF", root.mlbRed]
+                       : root.classicColors ? ["#3262C7", "#B2B2B2", "#D62934"]
+                       : [root.themePal.blue || Color.muted, root.hi, root.themePal.red || Color.urgent]
+                  delegate: Rectangle {
+                    required property var modelData
+                    width: Style.space(6); height: width; radius: width / 2
+                    anchors.verticalCenter: parent.verticalCenter
+                    color: modelData
+                    border.width: 1
+                    border.color: root.wash(0.3)
+                  }
+                }
+                Text {
+                  textFormat: Text.PlainText
+                  text: root.schemeLabel
+                  color: schemeMouse.containsMouse ? root.hi : Color.muted
+                  font.family: Style.font.family
+                  font.pixelSize: Style.space(10)
+                  font.bold: true
+                  anchors.verticalCenter: parent.verticalCenter
+                }
+              }
+              MouseArea {
+                id: schemeMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.cycleScheme()
+              }
+            }
             // Favorite-team chip: color square + abbr, ties the header to
             // the personalization below.
             Row {
@@ -1170,7 +1719,7 @@ Panel {
               Text {
                 textFormat: Text.PlainText
                 text: root.favTeam
-                color: Color.accent
+                color: root.hi
                 font.family: Style.font.family
                 font.pixelSize: Style.space(11)
                 font.bold: true
@@ -1178,10 +1727,10 @@ Panel {
               }
             }
             Text {
-              visible: root.champion() !== null
+              visible: root.champion() !== null && root.bracketSeason === root.thisYear
               textFormat: Text.PlainText
               text: root.trophy
-              color: Color.accent
+              color: root.hi
               font.family: Style.font.family
               font.pixelSize: Style.space(13)
               anchors.verticalCenter: parent.verticalCenter
@@ -1190,7 +1739,7 @@ Panel {
               textFormat: Text.PlainText
               text: {
                 var champ = root.champion()
-                if (champ) return champ.abbr + " " + root.thisYear
+                if (champ && champ.year === root.thisYear) return champ.abbr + " " + champ.year
                 var ph = root.currentPhase()
                 return (ph ? ph + " · " : "") + root.thisYear
               }
@@ -1206,23 +1755,29 @@ Panel {
         // Tab bar: the shell's segmented control.
         ButtonGroup {
           options: [
-            { value: "bracket", label: "Bracket" },
-            { value: "games", label: "Games" },
-            { value: "statcast", label: "Statcast" },
+            // Values stay as they were (saved defaultTab settings keep
+            // working); only labels and order changed.
+            { value: "live", label: "Live" },
+            { value: "games", label: "Schedule" },
+            { value: "statcast", label: "Stats" },
             { value: "odds", label: "Odds" },
-            { value: "season", label: "Season" }
+            { value: "radio", label: "Radio" },
+            { value: "season", label: "Season" },
+            { value: "bracket", label: "Playoffs" }
           ]
           value: root.view
           focusable: false
           foreground: Color.popups.text
           background: Color.popups.background
-          accent: Color.accent
+          accent: root.hi
           fontSize: Style.space(12)
           onChanged: function(v) { root.viewPinned = true; root.view = v }
         }
 
+        LiveTab { panel: root; width: parent.width; visible: root.view === "live" }
         BracketTab { panel: root; width: parent.width; visible: root.view === "bracket" }
         OddsTab { panel: root; width: parent.width; visible: root.view === "odds" }
+        RadioTab { panel: root; width: parent.width; visible: root.view === "radio" }
         GamesTab { panel: root; width: parent.width; visible: root.view === "games" }
         StatcastTab { panel: root; width: parent.width; visible: root.view === "statcast" }
         SeasonTab { panel: root; width: parent.width; visible: root.view === "season" }
