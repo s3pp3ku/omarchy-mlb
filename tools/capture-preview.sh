@@ -13,7 +13,14 @@
 #     popup, which crops it exactly with no drag-select.
 #
 # Tab selection uses `defaultTab` + a shell restart, which the MLB panel
-# honours.
+# honours. This widget normally lives in an extra bar
+# (~/.config/omarchy/extra-bars.json), but the shell's summon/hide IPC only
+# reaches widgets registered in the *main* bar's shell.json layout (it looks
+# the id up in Bar.qml's own module slots, which extra bars never populate).
+# So for the run, this script temporarily appends the widget's id to
+# shell.json's bar.layout.right, drives it from there, and removes it again
+# once every tab is captured — the extra-bars.json copy is never touched and
+# keeps running the whole time.
 #
 # Usage:  tools/capture-preview.sh [tab ...]      (default: all of them)
 set -euo pipefail
@@ -21,31 +28,99 @@ set -euo pipefail
 ID="s3pp3ku.mlb"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUTDIR="$ROOT/assets/tabs"
+SHELL_CFG="$HOME/.config/omarchy/shell.json"
 TMP="$(mktemp -d)"
 cleanup() {
   rm -rf "$TMP"
   if [ -n "${ORIGINAL_WS:-}" ]; then
     hyprctl dispatch "hl.dsp.focus({ workspace = \"$ORIGINAL_WS\" })" >/dev/null 2>&1 || true
   fi
-  if [ -n "${restore_tab:-}" ]; then
-    omarchy bar set "$ID" defaultTab "$restore_tab" >/dev/null 2>&1 || true
+  if [ -n "${added_main:-}" ]; then
+    remove_main_entry >/dev/null 2>&1 || true
+    omarchy restart shell >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT
 
 TABS=("$@")
-[ ${#TABS[@]} -eq 0 ] && TABS=(bracket games statcast season odds)
+[ ${#TABS[@]} -eq 0 ] && TABS=(live games statcast odds radio season bracket)
+
+# Append {"id": ID} to the main bar's right section, if it isn't there already.
+add_main_entry() {
+  python3 - "$ID" "$SHELL_CFG" <<'PYEOF'
+import json, sys
+ident, path = sys.argv[1], sys.argv[2]
+data = json.load(open(path))
+layout = data.setdefault("bar", {}).setdefault("layout", {})
+for section in ("left", "center", "right"):
+    for e in layout.get(section, []):
+        if (e if isinstance(e, str) else e.get("id")) == ident:
+            sys.exit()
+layout.setdefault("right", []).append({"id": ident})
+json.dump(data, open(path, "w"), indent=2)
+PYEOF
+}
+
+# Set defaultTab on the main bar's temporary entry for this widget.
+set_tab() {
+  python3 - "$ID" "$SHELL_CFG" "$1" <<'PYEOF'
+import json, sys
+ident, path, tab = sys.argv[1], sys.argv[2], sys.argv[3]
+data = json.load(open(path))
+layout = data.get("bar", {}).get("layout", {})
+for section in ("left", "center", "right"):
+    lst = layout.get(section, [])
+    for i, e in enumerate(lst):
+        eid = e if isinstance(e, str) else e.get("id")
+        if eid == ident:
+            settings = {} if isinstance(e, str) else {k: v for k, v in e.items() if k != "id"}
+            settings["defaultTab"] = tab
+            lst[i] = {"id": ident, **settings}
+json.dump(data, open(path, "w"), indent=2)
+PYEOF
+}
+
+# Remove the temporary main-bar entry for this widget entirely.
+remove_main_entry() {
+  python3 - "$ID" "$SHELL_CFG" <<'PYEOF'
+import json, sys
+ident, path = sys.argv[1], sys.argv[2]
+data = json.load(open(path))
+layout = data.get("bar", {}).get("layout", {})
+for section in ("left", "center", "right"):
+    lst = layout.get(section, [])
+    layout[section] = [e for e in lst if (e if isinstance(e, str) else e.get("id")) != ident]
+json.dump(data, open(path, "w"), indent=2)
+PYEOF
+}
 
 mkdir -p "$OUTDIR"
 
 # Never save shots with another app visible behind the translucent popup.
 # Find an empty workspace and restore the user's active one after capturing.
 ORIGINAL_WS=$(hyprctl activeworkspace -j | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
-CAPTURE_WS=$(hyprctl workspaces -j | python3 -c '
-import json,sys
-workspaces=json.load(sys.stdin)
-empty=[w["id"] for w in workspaces if w.get("windows", 0) == 0]
-print(empty[0] if empty else "")
+CAPTURE_WS=$(python3 -c '
+import json, subprocess
+workspaces = json.loads(subprocess.run(["hyprctl", "workspaces", "-j"], capture_output=True, text=True).stdout)
+clients = json.loads(subprocess.run(["hyprctl", "clients", "-j"], capture_output=True, text=True).stdout)
+# A workspace whose only window is the screensaver is as safe to shoot as a
+# truly empty one — it shows nothing but black, by design.
+by_ws = {}
+for c in clients:
+    by_ws.setdefault(c.get("workspace", {}).get("id"), []).append(c.get("class", ""))
+def safe(wid):
+    cls = by_ws.get(wid, [])
+    return len(cls) == 0 or all(c == "org.omarchy.screensaver" for c in cls)
+empty = [w["id"] for w in workspaces if safe(w["id"])]
+if empty:
+    print(empty[0])
+else:
+    # Hyprland drops empty, non-active workspaces from this listing entirely,
+    # so none showing up here does not mean none are free — ask for a fresh
+    # id above anything currently in use; focusing it creates it with nothing
+    # on it.
+    used = [w["id"] for w in workspaces]
+    print(max(used, default=0) + 1)
 ')
 if [ -z "$CAPTURE_WS" ]; then
   echo "!! No empty workspace found; refusing to capture other app contents." >&2
@@ -63,22 +138,13 @@ hyprctl dispatch 'hl.dsp.cursor.move({x=4,y=796})' >/dev/null 2>&1 \
   || hyprctl dispatch movecursor 4 796 >/dev/null 2>&1 || true
 sleep 1.5
 
-# Read the current tab setting, restored after the run. If an earlier capture
-# crashed and left the file clobbered, this just round-trips the stale value —
-# not ideal, but no worse than before; humans can always `omarchy bar set` it
-# back.
-restore_tab=$(python3 - "$ID" <<'PYEOF'
-import json, os, sys
-cfg = json.load(open(os.path.expanduser("~/.config/omarchy/shell.json")))
-for slot in cfg.get("bar", {}).get("layout", {}).values():
-    for w in slot:
-        if w.get("id") == sys.argv[1] and "defaultTab" in w:
-            print(w["defaultTab"])
-PYEOF
-)
+# Temporarily register the widget on the main bar so summon/hide can reach
+# it. The extra-bars.json copy is untouched and keeps running throughout.
+add_main_entry
+added_main=1
 
 for tab in "${TABS[@]}"; do
-  omarchy bar set "$ID" defaultTab "$tab"
+  set_tab "$tab"
   # Restart before each tab so the panel re-opens on the new view. The restart
   # can race its own predecessor out of the socket and the binary then exits
   # with "already running", so wait for a shell that actually pings.
@@ -130,7 +196,8 @@ for tab in "${TABS[@]}"; do
   echo "   $tab -> assets/tabs/$tab.png ($box)"
 done
 
-omarchy bar set "$ID" defaultTab "${restore_tab:-bracket}"
+remove_main_entry
+added_main=""
 omarchy restart shell || true
 for _ in $(seq 1 25); do
   omarchy-shell shell ping >/dev/null 2>&1 && break

@@ -20,10 +20,10 @@ TABS = ROOT / "assets" / "tabs"
 BAND = 700
 
 PANELS = [
-    ("bracket.png",   "BRACKET",   "playoff bracket + series cards"),
-    ("games.png",     "GAMES",     "full slate, scores, line 2 info"),
-    ("statcast.png",  "STATCAST",  "live feed + season matchup"),
-    ("odds.png",      "ODDS",      "book lines, implied, slate"),
+    ("live.png",      "LIVE",      "strike zone, pitch mix, hitter/pitcher lines"),
+    ("statcast.png",  "STATS",     "Savant percentiles, leaderboards, season matchup"),
+    ("radio.png",     "RADIO",     "flagship calls, play right from the bar"),
+    ("bracket.png",   "PLAYOFFS",  "bracket, series cards, champion recap"),
 ]
 
 
@@ -81,11 +81,11 @@ HTML = f"""<!DOCTYPE html><html><head><meta charset="utf-8"><style>
     <div class="left">
       <div class="brand"><span class="word">MLB &middot; FOR OMARCHY</span></div>
       <h1>The full season,<br><span class="acc">not just the playoffs.</span></h1>
-      <div class="sub">Five tabs of live baseball in the Omarchy bar. No API key, no account, nothing to set up.</div>
+      <div class="sub">Seven tabs of live baseball in the Omarchy bar. No API key, no account, nothing to set up.</div>
       <ul class="feat">
-        <li><b>Bracket + Games</b> &mdash; every game live, with dates, venues, probables</li>
-        <li><b>Season-long stats</b> &mdash; matchup card, team table, league leaders</li>
-        <li><b>Book lines</b> &mdash; moneyline, run line, total, juice, full daily slate</li>
+        <li><b>Live at-bats</b> &mdash; strike zone, pitch type and speed, hitter/pitcher lines</li>
+        <li><b>Baseball Savant</b> &mdash; percentile rankings, leaderboards, season stats</li>
+        <li><b>In-widget radio</b> &mdash; every flagship call, book lines, playoff recap</li>
       </ul>
       <div class="install"><span class="p">$</span> omarchy plugin add <span class="c">github.com/s3pp3ku/omarchy-mlb</span></div>
     </div>
